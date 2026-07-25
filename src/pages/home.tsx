@@ -29,11 +29,13 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
@@ -73,8 +75,10 @@ import { useUpdate } from '@/hooks/use-update'
 import { useVerge } from '@/hooks/use-verge'
 import { useAppData } from '@/providers/app-data-context'
 import {
+  createLocalBackup,
   createProfile,
   enhanceProfiles,
+  factoryResetApp,
   getProfiles,
   getSystemProxy,
   importProfile,
@@ -84,6 +88,7 @@ import {
   patchProfile,
   patchProfilesConfig,
   readProfileFile,
+  repairService,
   restartCore,
   restartApp,
   saveProfileFile,
@@ -631,6 +636,9 @@ const HomePage = () => {
   const [selfCheckItems, setSelfCheckItems] = useState<SelfCheckItem[]>([])
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [resetRebuildConfig, setResetRebuildConfig] = useState(true)
+  const [resetRepairService, setResetRepairService] = useState(true)
+  const [resetCreateBackup, setResetCreateBackup] = useState(true)
   // 到期提示弹窗
   const [expiredDialogOpen, setExpiredDialogOpen] = useState(false)
   // 手动配置管理（应对 web 断网无法导入订阅时，自行切换/导入/编辑本地配置）
@@ -2885,51 +2893,56 @@ const HomePage = () => {
     setStatus('已尝试自动修复，请查看最新结果')
   })
 
-  // 彻底重置：清空所有有问题的配置/订阅/本地数据，重启后等于全新安装。
-  // 仅用现有命令实现（不改 Rust）：关代理与 TUN → 关 DNS 覆写 → 模式回 rule
-  // → 删除全部订阅与规则配置 → 清空提取码等本地数据 → 重启应用重建干净配置。
+  // 彻底重置：重建配置和修复系统服务可以分别选择。稳定 client_id 必须保留，
+  // 否则重置后会被服务端识别成新设备并额外占用绑定名额。
   const factoryReset = useLockFn(async () => {
+    if (!resetRebuildConfig && !resetRepairService) {
+      setStatus('请至少选择“删除旧配置”或“修复系统服务”')
+      return
+    }
     setResetting(true)
     try {
-      // 1) 先把系统代理 / TUN 关掉，避免把坏代理残留在系统里
+      const stableClientId = getClientId()
+      await sendClientPresence(false).catch(() => undefined)
+
+      if (resetCreateBackup && resetRebuildConfig) {
+        await createLocalBackup()
+      }
+
+      // 先把系统代理 / TUN 关掉，避免坏代理残留在系统里。
       await patchVerge({ enable_tun_mode: false }).catch(() => {})
       await toggleSystemProxy(false).catch(() => {})
-      // 2) 关闭 DNS 覆写（解析异常的常见根因）
       await invoke('apply_dns_config', { apply: false }).catch(() => {})
-      // 3) 运行模式回到 rule，避免卡在 direct/global
       await patchClashMode('rule').catch(() => {})
-      // 4) 删除全部订阅与自定义规则（含全局 Merge 覆盖）
-      try {
-        const p = await getProfiles()
-        const items = p?.items ?? []
-        for (const it of items) {
-          const uid = (it as { uid?: string })?.uid
-          if (uid) await deleteProfile(uid).catch(() => {})
-        }
-        await patchProfilesConfig({
-          ...p,
-          current: undefined,
-          items: [],
-        }).catch(() => {})
-      } catch {
-        // 忽略，下面照样重启重建
+
+      if (resetRepairService) {
+        setStatus('正在修复系统服务，请确认管理员授权…')
+        await repairService()
       }
-      // 5) 清空提取码等所有本地数据
-      try {
-        Object.keys(localStorage)
-          .filter((k) => k.startsWith('shenxianyun.'))
-          .forEach((k) => localStorage.removeItem(k))
-      } catch {
-        // 忽略
+
+      if (!resetRebuildConfig) {
+        setStatus('系统服务已修复，正在重启…')
+        await restartApp()
+        return
       }
-      localStorage.removeItem(CODE_STORAGE_KEY)
-      localStorage.removeItem(CODE_EXPIRES_STORAGE_KEY)
+
+      Object.keys(localStorage)
+        .filter(
+          (key) =>
+            key.startsWith('shenxianyun.') && key !== CLIENT_ID_STORAGE_KEY,
+        )
+        .forEach((key) => {
+          localStorage.removeItem(key)
+        })
+      localStorage.setItem(CLIENT_ID_STORAGE_KEY, stableClientId)
       await persistManagedAuth(null).catch(() => undefined)
-      // 6) 重启应用，生成全新干净配置（等于重装）
-      await restartApp()
-    } catch {
+      setStatus('旧配置已清理，正在生成全新配置…')
+      await factoryResetApp()
+    } catch (error) {
       setResetting(false)
-      setStatus('重置失败，请重试或手动重装')
+      setStatus(
+        `重置失败：${error instanceof Error ? error.message : String(error)}`,
+      )
     }
   })
 
@@ -4427,19 +4440,58 @@ const HomePage = () => {
             }}
           >
             <DialogTitle sx={{ fontWeight: 900, color: '#e5484d', pb: 0.5 }}>
-              彻底重置（清空所有数据）
+              彻底重置（重建配置）
             </DialogTitle>
             <DialogContent sx={{ pt: 1.5 }}>
               <Alert severity="warning" sx={{ mb: 1.5 }}>
-                自动修复无效时使用。将清除所有有问题的配置，效果等于重新安装。
+                自动修复无效时使用。将删除当前配置，如需恢复请保留本地备份。
               </Alert>
-              <Typography sx={{ fontSize: 13, color: 'rgba(36,46,66,.78)' }}>
-                会执行：
-                <br />· 关闭系统代理与 TUN
-                <br />· 关闭 DNS 覆写、运行模式回到 rule
-                <br />· 删除全部订阅与自定义规则
-                <br />· 清空提取码等全部本地数据
-                <br />· 重启应用，生成全新干净配置
+              <Stack spacing={0.5}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={resetRebuildConfig}
+                      onChange={(event) =>
+                        setResetRebuildConfig(event.target.checked)
+                      }
+                    />
+                  }
+                  label="删除之前的配置并生成全新配置"
+                />
+                <FormControlLabel
+                  disabled={!resetRebuildConfig}
+                  control={
+                    <Checkbox
+                      checked={resetCreateBackup}
+                      onChange={(event) =>
+                        setResetCreateBackup(event.target.checked)
+                      }
+                    />
+                  }
+                  label="重置前创建本地恢复备份（推荐）"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={resetRepairService}
+                      onChange={(event) =>
+                        setResetRepairService(event.target.checked)
+                      }
+                    />
+                  }
+                  label="同时修复系统服务（协议不匹配时推荐）"
+                />
+              </Stack>
+              <Typography
+                sx={{
+                  mt: 1,
+                  fontSize: 13,
+                  color: 'rgba(36,46,66,.78)',
+                }}
+              >
+                删除范围：订阅、基础/运行时配置、DNS
+                覆写、受管凭据和客户端设置。 日志、本地备份和稳定设备 ID
+                会保留，不会重复占用设备名额。
                 <br />
                 <b>重启后需重新输入提取码并导入订阅。</b>
               </Typography>
@@ -4456,7 +4508,9 @@ const HomePage = () => {
                 variant="contained"
                 disableElevation
                 onClick={factoryReset}
-                disabled={resetting}
+                disabled={
+                  resetting || (!resetRebuildConfig && !resetRepairService)
+                }
                 sx={{ fontWeight: 800 }}
               >
                 {resetting ? '重置中…' : '确认重置并重启'}

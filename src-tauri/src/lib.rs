@@ -148,6 +148,7 @@ mod app_init {
             cmd::get_network_interfaces,
             cmd::get_system_hostname,
             cmd::restart_app,
+            cmd::factory_reset_app,
             cmd::start_core,
             cmd::stop_core,
             cmd::restart_core,

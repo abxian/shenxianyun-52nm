@@ -326,6 +326,10 @@ export async function restartApp() {
   return invoke<void>('restart_app')
 }
 
+export async function factoryResetApp() {
+  return invoke<void>('factory_reset_app')
+}
+
 export async function getAppDir() {
   return invoke<string>('get_app_dir')
 }
