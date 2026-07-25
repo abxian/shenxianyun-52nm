@@ -232,7 +232,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: '神仙云 PC 52nm ${{ github.ref_name }}'
-          releaseBody: 'Draft release, will be updated later.'
+          releaseBody: '神仙云 PC 52nm 正式版，详细更新内容见 Release 页面。'
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-rc') }}
           tauriScript: pnpm
