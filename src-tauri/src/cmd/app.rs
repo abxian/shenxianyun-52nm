@@ -119,8 +119,7 @@ pub async fn factory_reset_app() -> CmdResult<()> {
         removed
     );
 
-    handle::Handle::app_handle().restart();
-    Ok(())
+    handle::Handle::app_handle().restart()
 }
 
 /// 获取便携版标识
