@@ -28,17 +28,15 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 
 ## Install
 
-请到发布页面下载对应的安装包：[Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases)<br>
-Go to the [Release page](https://github.com/clash-verge-rev/clash-verge-rev/releases) to download the corresponding installation package<br>
+请到 52nm 独立发布页面下载对应的安装包：[Release page](https://github.com/abxian/shenxianyun-52nm/releases)<br>
+Go to the [52nm Release page](https://github.com/abxian/shenxianyun-52nm/releases) to download the corresponding installation package<br>
 Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
 
 #### 我应当怎样选择发行版
 
 | 版本        | 特征                                     | 链接                                                                                   |
 | :---------- | :--------------------------------------- | :------------------------------------------------------------------------------------- |
-| Stable      | 正式版，高可靠性，适合日常使用。         | [Release](https://github.com/clash-verge-rev/clash-verge-rev/releases)                 |
-| Alpha(废弃) | 测试发布流程。                           | [Alpha](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/alpha)         |
-| AutoBuild   | 滚动更新版，适合测试反馈，可能存在缺陷。 | [AutoBuild](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/autobuild) |
+| Stable      | 52nm 正式版，高可靠性，适合日常使用。 | [Release](https://github.com/abxian/shenxianyun-52nm/releases) |
 
 #### 安装说明和常见问题，请到 [文档页](https://clash-verge-rev.github.io/) 查看
 
@@ -148,7 +146,7 @@ Release Build（`.github/workflows/release.yml`）**只由 `v*.*.*` 形式的 gi
 
 ```bash
 # 在 main 分支上提交
-git add -A
+git add <本任务文件>
 git commit -m "feat: xxx (v2.5.12)"
 git push origin main
 
@@ -158,7 +156,8 @@ git push origin v2.5.12
 ```
 
 Action 会在 Windows / macOS / Linux / ARM 全平台编译（约 30~40 分钟），
-并把安装包上传到本仓库的 GitHub Release **`v<版本号>`**（标题 `Clash Verge Rev v<版本号>`）。
+并把安装包上传到本仓库的 GitHub Release **`v<版本号>`**（标题
+`神仙云 PC 52nm v<版本号>`）。
 
 - 桌面更新签名用 **Tauri updater 私钥**，存放在私有仓库
   [`abxian/shenxianyun-keys`](https://github.com/abxian/shenxianyun-keys)：
@@ -177,30 +176,12 @@ Action 跑完后到本仓库 Release `v<版本号>` 页面下载（`<ver>` 为�
 | Linux deb 64 位 | `Clash.Verge_<ver>_amd64.deb` |
 | Linux rpm 64 位 | `Clash.Verge-<ver>-1.x86_64.rpm` |
 
-### 四、重命名后上传到 dufs 分发服务
+### 四、52nm 分发边界
 
-分发服务器：**<http://114.80.36.225:5011/sxy/>**（dufs，支持 WebDAV PUT）。
-下载到的安装包按下表**重命名为固定名称**（用户/后台始终按固定名下载），再用 `curl -T`（PUT）上传：
-
-| 固定分发名 | 来源产物 |
-| --- | --- |
-| `神仙云.exe` | `Clash.Verge_<ver>_x64-setup.exe` |
-| `神仙云.dmg` | `Clash.Verge_<ver>_<arch>.dmg`（按需选 aarch64 / x64） |
-| `神仙云.deb` | `Clash.Verge_<ver>_amd64.deb` |
-| `神仙云.rpm` | `Clash.Verge-<ver>-1.x86_64.rpm` |
-
-```bash
-DUFS=http://114.80.36.225:5011/sxy
-# 先把下载的安装包重命名为固定名，再 PUT 上传（覆盖同名文件）
-curl -T 神仙云.exe "$DUFS/神仙云.exe"
-curl -T 神仙云.dmg "$DUFS/神仙云.dmg"
-curl -T 神仙云.deb "$DUFS/神仙云.deb"
-curl -T 神仙云.rpm "$DUFS/神仙云.rpm"
-# dufs 上传需鉴权：-u shenxianyun:shenxianyun@123（匿名只读）
-# curl -u user:pass -T 神仙云.exe "$DUFS/神仙云.exe"
-```
-
-> 安卓的 `神仙云.apk` / `shenxianyunall.apk` 由 android 仓库流程产出后上传到同一目录。
+本仓库的正式安装包和 Tauri updater 只发布到
+`abxian/shenxianyun-52nm` 的 GitHub Release。不得上传或覆盖旧神仙云
+Dufs，也不得修改旧客户端仓库的 Release。若以后建立 52nm 独立下载站，必须
+先在 NAS 笔记记录独立域名、存储、凭据和回滚方案，再单独增加发布步骤。
 
 ### 五、流程速记（每次发布都照做）
 
@@ -208,7 +189,8 @@ curl -T 神仙云.rpm "$DUFS/神仙云.rpm"
 2. `git commit` 到 main → `git push origin main`。
 3. 打 `v<版本号>` tag → `git push origin <tag>`，触发 Release Build。
 4. 等 Action 跑完 → 到 Release `v<版本号>` 下载安装包。
-5. 重命名为 `神仙云.exe/.dmg/.deb/.rpm` → `curl -T` 上传到 dufs。
+5. 核对 Release 为非 draft、非 prerelease，资产与 updater 均属于本 52nm 仓库，
+   再更新 52nm vpn-web 后台下载地址。
 
 ## License
 
