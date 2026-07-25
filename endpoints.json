@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "profile": "52nm",
+  "api_bases": [
+    "https://api.52nm.de:5443",
+    "https://52nm.de",
+    "https://www.52nm.de"
+  ],
+  "sub_base": "https://api.52nm.de:5443",
+  "download_base": "https://api.52nm.de:5443",
+  "bootstrap_proxy": "",
+  "updated_at": "2026-07-26T00:00:00+08:00"
+}

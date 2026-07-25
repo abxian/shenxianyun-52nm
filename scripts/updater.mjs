@@ -202,8 +202,7 @@ async function processRelease(github, options, tag, isAlpha) {
 
     Object.entries(updateDataNew.platforms).forEach(([key, value]) => {
       if (value.url) {
-        updateDataNew.platforms[key].url =
-          'https://gh-proxy.org/' + value.url
+        updateDataNew.platforms[key].url = 'https://gh-proxy.org/' + value.url
       } else {
         console.log(`[Error]: updateDataNew.platforms.${key} is null`)
       }
@@ -293,8 +292,9 @@ async function processRelease(github, options, tag, isAlpha) {
         `Successfully uploaded ${isAlpha ? 'alpha' : 'stable'} update files to ${releaseTag}`,
       )
 
-      // 自有 dufs 是第一更新通道：把更新包搬运到 dufs 并发布 update.json（仅稳定版）
-      if (!isAlpha) {
+      // 52nm 绑定版本默认只发布到本仓库 GitHub Release。只有显式打开开关且
+      // 配置了独立的 52nm 分发服务时才允许上传，避免覆盖旧神仙云 Dufs。
+      if (!isAlpha && process.env.ENABLE_DUFS_PUBLISH === 'true') {
         await publishToDufs(updateData, release.assets).catch((err) => {
           console.error('[dufs] publish failed:', err.message)
           process.exitCode = 1
@@ -327,7 +327,7 @@ async function getSignature(url) {
 
 // ===== 发布到自有 dufs：国内直连的第一更新通道，不依赖 GitHub / 第三方加速 =====
 // 把各平台更新包从 GitHub 搬运到 dufs /updater/ 下，并生成指向 dufs 的 update.json。
-// 需要仓库 secrets：DUFS_BASE（如 http://114.80.36.225:5011/sxy）、DUFS_USER、DUFS_PASS。
+// 可选独立分发需要仓库 secrets：DUFS_BASE、DUFS_USER、DUFS_PASS。
 async function publishToDufs(updateData, releaseAssets) {
   const base = (process.env.DUFS_BASE || '').replace(/\/+$/, '')
   if (!base) {
@@ -356,7 +356,8 @@ async function publishToDufs(updateData, releaseAssets) {
     const filename = decodeURIComponent(value.url.split('/').pop())
     const target = `${base}/updater/${encodeURIComponent(filename)}`
     if (uploaded.has(value.url)) {
-      if (uploaded.get(value.url)) value.url = `${publicBase}/updater/${encodeURIComponent(filename)}`
+      if (uploaded.get(value.url))
+        value.url = `${publicBase}/updater/${encodeURIComponent(filename)}`
       continue
     }
     try {
@@ -365,14 +366,24 @@ async function publishToDufs(updateData, releaseAssets) {
       for (let attempt = 1; attempt <= 4 && !buf; attempt++) {
         try {
           const res = await fetch(value.url)
-          if (!res.ok) { console.log(`[dufs] ${filename} HTTP ${res.status} (try ${attempt})`); continue }
+          if (!res.ok) {
+            console.log(
+              `[dufs] ${filename} HTTP ${res.status} (try ${attempt})`,
+            )
+            continue
+          }
           buf = Buffer.from(await res.arrayBuffer())
         } catch (e) {
-          console.log(`[dufs] ${filename} fetch err (try ${attempt}): ${e.message}`)
+          console.log(
+            `[dufs] ${filename} fetch err (try ${attempt}): ${e.message}`,
+          )
           await new Promise((r) => setTimeout(r, 3000 * attempt))
         }
       }
-      if (!buf) { uploaded.set(value.url, false); continue }
+      if (!buf) {
+        uploaded.set(value.url, false)
+        continue
+      }
       let putOk = false
       for (let attempt = 1; attempt <= 4 && !putOk; attempt++) {
         try {
@@ -391,12 +402,15 @@ async function publishToDufs(updateData, releaseAssets) {
             `[dufs] ${key}: ${filename} -> HTTP ${put.status}, ${uploadedSize}/${buf.length} bytes (try ${attempt})`,
           )
         } catch (e) {
-          console.log(`[dufs] ${filename} upload err (try ${attempt}): ${e.message}`)
+          console.log(
+            `[dufs] ${filename} upload err (try ${attempt}): ${e.message}`,
+          )
         }
         if (!putOk) await new Promise((r) => setTimeout(r, 3000 * attempt))
       }
       uploaded.set(value.url, putOk)
-      if (putOk) value.url = `${publicBase}/updater/${encodeURIComponent(filename)}`
+      if (putOk)
+        value.url = `${publicBase}/updater/${encodeURIComponent(filename)}`
     } catch (err) {
       console.log(`[dufs] ${filename} error: ${err.message}`)
       uploaded.set(value.url, false)

@@ -181,11 +181,12 @@ jobs:
             ${{ env.SIG }}
 
       - name: Upload Intel bundles to Dufs
-        if: ${{ inputs.publish_dufs }}
+        # 52nm 尚未配置独立分发服务，禁止误覆盖旧神仙云 Dufs。
+        if: ${{ false }}
         shell: bash
         env:
           DUFS_BASE: ${{ secrets.DUFS_BASE }}
-          DUFS_PUBLIC_BASE: https://sxy.sxnn.de:5443/sxy
+          DUFS_PUBLIC_BASE: https://api.52nm.de:5443/client-downloads
           DUFS_USER: ${{ secrets.DUFS_USER }}
           DUFS_PASS: ${{ secrets.DUFS_PASS }}
         run: |

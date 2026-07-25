@@ -62,6 +62,7 @@ import { ClashPortViewer } from '@/components/setting/mods/clash-port-viewer'
 import { ControllerViewer } from '@/components/setting/mods/controller-viewer'
 import { TunnelsViewer } from '@/components/setting/mods/tunnels-viewer'
 import { WebUIViewer } from '@/components/setting/mods/web-ui-viewer'
+import { DOMESTIC_API_HOST, isOfficialHostname } from '@/config/domain-profile'
 import { useClash } from '@/hooks/use-clash'
 import { useConnectionData } from '@/hooks/use-connection-data'
 import { useProfiles } from '@/hooks/use-profiles'
@@ -156,8 +157,8 @@ const buildExpiredProfileYaml = () =>
     // 占位期间仍能探测到续费并自动恢复；其余流量全部走不可达的占位节点（无法上网）。
     rules: [...officialDirectRules(), 'MATCH,节点选择'],
   })
-const DESKTOP_VERSION = '2.5.29-rc.1'
-const CLIENT_UA = 'JC116-Shenxianyun-Windows/2.5.29-rc.1'
+const DESKTOP_VERSION = '2.5.29'
+const CLIENT_UA = 'JC116-Shenxianyun-Windows/2.5.29'
 const DESKTOP_PLATFORM = getSystem()
 const fieldSx = {
   '& .MuiInputLabel-root': {
@@ -348,7 +349,7 @@ const DEFAULT_DNS_CONFIG = {
     'localhost.ptlogin2.qq.com',
     '*.msftncsi.com',
     'www.msftconnecttest.com',
-    'api.sxnn.de',
+    DOMESTIC_API_HOST,
   ],
   'default-nameserver': ['system', '223.6.6.6', '8.8.8.8'],
   nameserver: ['https://doh.pub/dns-query', 'https://dns.alidns.com/dns-query'],
@@ -381,7 +382,7 @@ const parseExpireTime = (value: string) => {
   return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time
 }
 
-// 从订阅 URL 提取神仙云提取码：仅当域名是本站(sxnn.de / jc116.com / 内穿IP)
+// 从订阅 URL 提取神仙云提取码：仅当域名是 52nm 官网域名或明确的 IP 入口
 // 且路径是 /sub/<code> 时才认。用于把"一键导入的官网订阅"识别为提取码订阅、
 // 受有效期管理;其它网站的 Clash 配置不匹配 → 不受限制,自由使用。
 const extractCodeFromProfileUrl = (url: string): string => {
@@ -390,9 +391,7 @@ const extractCodeFromProfileUrl = (url: string): string => {
     const u = new URL(url)
     const host = u.hostname
     const isOfficial =
-      /(^|\.)sxnn\.de$/.test(host) ||
-      /(^|\.)jc116\.com$/.test(host) ||
-      /^\d+\.\d+\.\d+\.\d+$/.test(host)
+      isOfficialHostname(host) || /^\d+\.\d+\.\d+\.\d+$/.test(host)
     if (!isOfficial) return ''
     const m = u.pathname.match(/\/sub\/([^/]+)/)
     return m ? decodeURIComponent(m[1]) : ''
@@ -466,11 +465,11 @@ const restoreRuleSnapshot = async (
   await saveProfileFile(profileUid, yaml.dump(data, { lineWidth: -1 }))
 }
 
-const DOMESTIC_API_DIRECT_RULE = 'DOMAIN,api.sxnn.de,DIRECT'
+const DOMESTIC_API_DIRECT_RULE = `DOMAIN,${DOMESTIC_API_HOST},DIRECT`
 
 const isDomesticApiUrl = (url: string): boolean => {
   try {
-    return new URL(url).hostname === 'api.sxnn.de'
+    return new URL(url).hostname === DOMESTIC_API_HOST
   } catch {
     return false
   }
@@ -659,7 +658,7 @@ const HomePage = () => {
     // 改为打开 Releases 页让用户手动下载安装。
     if (isMacOS) {
       await openWebUrl(
-        'https://github.com/abxian/shenxianyun/releases/latest',
+        'https://github.com/abxian/shenxianyun-52nm/releases/latest',
       ).catch(() => undefined)
       return
     }
@@ -2130,7 +2129,7 @@ const HomePage = () => {
   const proxyUrl = `http://127.0.0.1:${mixedPort}`
 
   // 探测/验证的「直连兜底代理」：
-  // - 内核在跑：用内核混合端口（内核带 sxnn.de/jc116.com 直连规则，最可靠）。
+  // - 内核在跑：用内核混合端口（内核带 52nm.de 直连规则，最可靠）。
   // - 内核没跑：回落到操作系统当前的系统代理（如用户在用 OpenClash 做系统代理），
   //   让 App 像浏览器一样能出网，解决冷启动「一打开全不通」。
   useEffect(() => {

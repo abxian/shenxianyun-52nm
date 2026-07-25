@@ -1,5 +1,7 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
+import { DOMAIN_PROFILE, DOMESTIC_API_HOST } from '@/config/domain-profile'
+
 /**
  * 端点发现（去掉写死 sub.jc116.com）：
  * 启动时从「发现源」拉取 endpoints.json，得到 api_bases / sub_base / download_base，
@@ -10,19 +12,16 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 // 首装和每次启动都先使用国内主域名。其它地址只在国内线路检测失败时兜底，
 // 不能因为响应更快就抢占国内主线路。
-export const PINNED_API_BASES = [
-  'https://api.sxnn.de:5443', // 神仙云1 国内直连
-]
+export const PINNED_API_BASES = [...DOMAIN_PROFILE.apiBases]
 
-// 仅作为故障兜底参与并发检测。旧 sub.jc116.com 已失效，不再作为线路候选。
-const FALLBACK_API_BASES = ['https://sxnn.de', 'http://114.80.36.225:5010']
-const RETIRED_API_HOSTS = new Set(['sub.jc116.com'])
+// 52nm 绑定版本不回退旧业务域名，避免新客户端被动态配置带回旧网站。
+const RETIRED_API_HOSTS = new Set(['api.sxnn.de', 'sxnn.de', 'sub.jc116.com'])
 // 内置兜底默认值（发现源全挂时用第一条写死线路）
 export const DEFAULT_API_BASE = PINNED_API_BASES[0]
 
 // 完整线路按固定优先级排列；并发检测只缩短等待时间，不改变选择优先级。
 const allApiBases = (): string[] => {
-  const merged = [...PINNED_API_BASES, ...FALLBACK_API_BASES]
+  const merged: string[] = [...PINNED_API_BASES]
   for (const b of readCache()?.api_bases ?? []) {
     let host = ''
     try {
@@ -35,17 +34,12 @@ const allApiBases = (): string[] => {
   return merged
 }
 
-// 发现锚点：第一个是 web 后台「保存并发布」自动上传的 endpoints.json（唯一真源，dufs），
-// 后两个是备份（GitHub 手动同步、app 动态接口）。
-const DISCOVERY_URLS = [
-  'https://sxy.sxnn.de:5443/endpoints.json',
-  'http://114.80.36.225:5011/endpoints.json',
-  'https://raw.githubusercontent.com/abxian/shenxianyun-config/main/endpoints.json',
-  'https://sxnn.de/api/endpoints',
-]
+// 发现锚点：独立站动态接口优先，GitHub 与国外站点作为备用。
+const DISCOVERY_URLS = [...DOMAIN_PROFILE.discoveryUrls]
 
-const STORAGE_KEY = 'shenxianyun.endpoints'
-const ACTIVE_BASE_KEY = 'shenxianyun.apiBaseActive'
+// 52nm 版本使用独立缓存，覆盖安装或并行测试时不会读取旧网站线路。
+const STORAGE_KEY = 'shenxianyun.52nm.endpoints'
+const ACTIVE_BASE_KEY = 'shenxianyun.52nm.apiBaseActive'
 
 export type Endpoints = {
   version?: number
@@ -167,14 +161,14 @@ const probeOnce = async (
 
 const isDomesticPrimary = (base: string): boolean => {
   try {
-    return new URL(base).hostname === 'api.sxnn.de'
+    return new URL(base).hostname === DOMESTIC_API_HOST
   } catch {
     return false
   }
 }
 
 // 判断一条线路是否可用：先本机直连；直连不通且传了 proxyUrl（内核在跑）时，
-// 再经内核端口重试一次——内核带 sxnn.de/jc116.com 直连规则，能绕开系统级
+// 再经内核端口重试一次——内核带 52nm.de 直连规则，能绕开系统级
 // OpenClash/fake-ip 把自家服务器误路由到国外节点的问题。任一成功即可用。
 const reachable = async (base: string, proxyUrl?: string): Promise<boolean> => {
   const url = `${base}/api/app-version?_=${Date.now()}`
@@ -259,7 +253,7 @@ export const initEndpointDiscovery = async (
 
 /** 官方域名直连列表：生成占位/规则时使用，避免客户端把自家 API/订阅域名也代理了。 */
 export const officialDirectRules = (): string[] => {
-  const hosts = new Set<string>(['jc116.com', 'sxnn.de'])
+  const hosts = new Set<string>(DOMAIN_PROFILE.officialDomainSuffixes)
   const cached = readCache()
   const collect = (value?: string) => {
     if (!value) return

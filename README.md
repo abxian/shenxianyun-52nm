@@ -81,6 +81,18 @@ Refer to [Doc FAQ Page](https://clash-verge-rev.github.io/faq/windows.html)
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for more details.
 
+### 52nm domain profile
+
+This repository is the PC client bound to the 52nm vpn-web deployment:
+
+- domestic API: `https://api.52nm.de:5443`
+- overseas fallbacks: `https://52nm.de`, `https://www.52nm.de`
+- migration guide: [`docs/DOMAIN_MIGRATION_52NM.md`](./docs/DOMAIN_MIGRATION_52NM.md)
+
+Website domains are centralized in `src/config/domain-profile.ts` and the root
+`endpoints.json`. The updater is isolated to this repository's GitHub Release and
+does not consume the original Shenxianyun update channel.
+
 ### Build and verification policy
 
 - Full compilation and packaging must run in GitHub Actions. Local machines are only used for type checks, lint, unit tests, `git diff --check`, and optional development preview.

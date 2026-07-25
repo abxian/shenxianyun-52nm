@@ -83,7 +83,8 @@ jobs:
           echo "TAG_NAME=$TAG_REF" >> $GITHUB_ENV
           VERSION=$(echo "$TAG_REF" | sed 's/^v//')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "DOWNLOAD_URL=https://github.com/clash-verge-rev/clash-verge-rev/releases/download/$TAG_REF" >> $GITHUB_ENV
+          echo "REPOSITORY_URL=https://github.com/${GITHUB_REPOSITORY}" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG_REF" >> $GITHUB_ENV
         shell: bash
 
       - run: |
@@ -117,10 +118,7 @@ jobs:
           - [64位](${{ env.DOWNLOAD_URL }}/Clash.Verge-${{ env.VERSION }}-1.x86_64.rpm) | [ARM64](${{ env.DOWNLOAD_URL }}/Clash.Verge-${{ env.VERSION }}-1.aarch64.rpm) | [ARMv7](${{ env.DOWNLOAD_URL }}/Clash.Verge-${{ env.VERSION }}-1.armhfp.rpm)
 
           ### FAQ
-          - [常见问题](https://clash-verge-rev.github.io/faq/windows.html)
-
-          ### 稳定机场VPN推荐
-          - [狗狗加速](https://verge.dginv.click/#/register?code=oaxsAGo6)
+          - [项目说明](${{ env.REPOSITORY_URL }}#readme)
 
           Created at ${{ env.BUILDTIME }}.
           EOF
@@ -148,7 +146,7 @@ jobs:
           echo "Publishing release $release_id ($release_url) with $asset_count assets."
 
           gh api --method PATCH repos/{owner}/{repo}/releases/"$release_id" \
-            -f name="Clash Verge Rev $TAG_NAME" \
+            -f name="神仙云 PC 52nm $TAG_NAME" \
             -F body=@release.txt \
             -F draft=false \
             -F prerelease="$PRERELEASE" \
@@ -235,7 +233,7 @@ jobs:
           # build an unsigned .dmg instead of failing the whole release.
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Clash Verge Rev ${{ github.ref_name }}'
+          releaseName: '神仙云 PC 52nm ${{ github.ref_name }}'
           releaseBody: 'Draft release, will be updated later.'
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-rc') }}
@@ -401,7 +399,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{env.VERSION}}
-          name: 'Clash Verge Rev v${{env.VERSION}}'
+          name: '神仙云 PC 52nm v${{env.VERSION}}'
           body: 'See release notes for detailed changelog.'
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
@@ -518,7 +516,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{steps.build.outputs.appVersion}}
-          name: 'Clash Verge Rev v${{steps.build.outputs.appVersion}}'
+          name: '神仙云 PC 52nm v${{steps.build.outputs.appVersion}}'
           body: 'See release notes for detailed changelog.'
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
@@ -556,11 +554,8 @@ jobs:
         run: pnpm updater
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 自有 dufs 第一更新通道：更新包与 update.json 自动发布到 dufs
-          DUFS_BASE: ${{ secrets.DUFS_BASE }}
-          DUFS_PUBLIC_BASE: https://sxy.sxnn.de:5443/sxy
-          DUFS_USER: ${{ secrets.DUFS_USER }}
-          DUFS_PASS: ${{ secrets.DUFS_PASS }}
+          # 52nm 仓库默认仅维护自身 GitHub updater，不上传旧神仙云 Dufs。
+          ENABLE_DUFS_PUBLISH: 'false'
 
   release-update-for-fixed-webview2:
     if: ${{ !contains(github.ref_name, '-rc') }}
