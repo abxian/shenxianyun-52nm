@@ -28,15 +28,17 @@ const arch = target ? ARCH_MAP[target] : PROCESS_MAP[process.arch]
 async function resolvePortable() {
   if (process.platform !== 'win32') return
 
-  const releaseDir = target
-    ? `./src-tauri/target/${target}/release`
-    : `./src-tauri/target/release`
-
-  const configDir = path.join(releaseDir, '.config')
-
-  if (!fs.existsSync(releaseDir)) {
+  const releaseDir = [
+    target ? `./target/${target}/release` : './target/release',
+    target
+      ? `./src-tauri/target/${target}/release`
+      : './src-tauri/target/release',
+  ].find(fs.existsSync)
+  if (!releaseDir) {
     throw new Error('could not found the release dir')
   }
+
+  const configDir = path.join(releaseDir, '.config')
 
   await fsp.mkdir(configDir, { recursive: true })
   if (!fs.existsSync(path.join(configDir, 'PORTABLE'))) {
