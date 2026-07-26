@@ -160,7 +160,7 @@ git push origin v2.5.12
 
 Action 会在 Windows / macOS / Linux / ARM 全平台编译（约 30~40 分钟），
 并把安装包上传到本仓库的 GitHub Release **`v<版本号>`**（标题
-`神仙云 PC 52nm v<版本号>`）。
+`吾爱云 PC 52nm v<版本号>`）。
 
 - 桌面更新签名用 **Tauri updater 私钥**，存放在私有仓库
   [`abxian/shenxianyun-keys`](https://github.com/abxian/shenxianyun-keys)：
@@ -173,11 +173,13 @@ Action 跑完后到本仓库 Release `v<版本号>` 页面下载（`<ver>` 为�
 
 | 平台 | Action 产物文件名 |
 | --- | --- |
-| Windows 64 位（常用） | `Clash.Verge_<ver>_x64-setup.exe` |
-| macOS Apple 芯片 | `Clash.Verge_<ver>_aarch64.dmg` |
-| macOS Intel 芯片 | `Clash.Verge_<ver>_x64.dmg` |
-| Linux deb 64 位 | `Clash.Verge_<ver>_amd64.deb` |
-| Linux rpm 64 位 | `Clash.Verge-<ver>-1.x86_64.rpm` |
+| Windows 64 位（常用） | `Wuaiyun_<ver>_x64-setup.exe` |
+| macOS Apple 芯片 | `Wuaiyun_<ver>_<arch>.dmg` |
+| Linux deb | `Wuaiyun_<ver>_<arch>.deb` |
+| Linux rpm | `Wuaiyun_<ver>_<arch>.rpm` |
+
+应用界面和安装后的名称仍为“吾爱云”。`Wuaiyun` 只用于 GitHub 下载资产，
+避免中文文件名被平台清洗成乱码。
 
 ### 四、52nm 分发边界
 

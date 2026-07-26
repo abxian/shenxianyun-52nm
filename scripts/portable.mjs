@@ -56,7 +56,7 @@ async function resolvePortable() {
   const require = createRequire(import.meta.url)
   const packageJson = require('../package.json')
   const { version } = packageJson
-  const zipFile = `${profile.clientName}_${version}_${arch}_portable.zip`
+  const zipFile = `${profile.desktopArtifactBasename}_${version}_${arch}_portable.zip`
   zip.writeZip(zipFile)
   console.log('[INFO]: create portable zip successfully')
 }

@@ -6,6 +6,7 @@ const required = [
   'site.name',
   'client.name',
   'desktop.product.name',
+  'desktop.artifact.basename',
   'desktop.identifier',
   'deep.link.scheme',
   'api.domestic.base',
@@ -41,6 +42,15 @@ export const readSiteProfile = (root = process.cwd()) => {
   if (!values['subscription.name.template'].includes('{code}')) {
     throw new Error('subscription.name.template must contain {code}')
   }
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(
+      values['desktop.artifact.basename'],
+    )
+  ) {
+    throw new Error(
+      'desktop.artifact.basename must be a GitHub-safe ASCII basename',
+    )
+  }
   new URL(values['api.domestic.base'])
   const urlKeys = ['api.bases', 'discovery.urls', 'updater.endpoints']
   for (const key of urlKeys) {
@@ -53,6 +63,7 @@ export const readSiteProfile = (root = process.cwd()) => {
     nodeBrand: values['node.brand'] || values['client.name'],
     subscriptionNameTemplate: values['subscription.name.template'] || '{code}',
     desktopProductName: values['desktop.product.name'],
+    desktopArtifactBasename: values['desktop.artifact.basename'],
     desktopIdentifier: values['desktop.identifier'],
     deepLinkScheme: values['deep.link.scheme'],
     domesticApiBase: values['api.domestic.base'].replace(/\/+$/, ''),

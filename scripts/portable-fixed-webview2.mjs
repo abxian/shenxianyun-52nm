@@ -71,7 +71,7 @@ async function resolvePortable() {
   const packageJson = require('../package.json')
   const { version } = packageJson
 
-  const zipFile = `${profile.clientName}_${version}_${arch}_fixed_webview2_portable.zip`
+  const zipFile = `${profile.desktopArtifactBasename}_${version}_${arch}_fixed_webview2_portable.zip`
   zip.writeZip(zipFile)
 
   console.log('[INFO]: create portable zip successfully')

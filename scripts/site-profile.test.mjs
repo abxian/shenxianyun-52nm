@@ -19,6 +19,7 @@ test('applies a copied brand without retaining 52nm endpoints', () => {
       'node.brand=演示节点',
       'subscription.name.template={client_name}-{code}',
       'desktop.product.name=Demo Cloud',
+      'desktop.artifact.basename=DemoCloud',
       'desktop.identifier=example.demo.cloud',
       'deep.link.scheme=democloud',
       'api.domestic.base=https://api.example.test',
@@ -70,6 +71,7 @@ test('applies a copied brand without retaining 52nm endpoints', () => {
     fs.readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'),
   )
   assert.equal(tauri.productName, 'Demo Cloud')
+  assert.equal(profile.desktopArtifactBasename, 'DemoCloud')
   assert.equal(tauri.identifier, 'example.demo.cloud')
   assert.equal(tauri.bundle.longDescription, '演示云')
   assert.equal(tauri.bundle.shortDescription, '演示云')
