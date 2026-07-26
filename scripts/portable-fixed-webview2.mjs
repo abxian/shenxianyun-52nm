@@ -88,10 +88,17 @@ async function resolvePortable() {
   const tag = alpha ? 'alpha' : process.env.TAG_NAME || `v${version}`
   console.log('[INFO]: upload to ', tag)
 
-  const { data: release } = await github.rest.repos.getReleaseByTag({
+  const releases = await github.paginate(github.rest.repos.listReleases, {
     ...options,
-    tag,
+    per_page: 100,
   })
+  const matches = releases.filter((release) => release.tag_name === tag)
+  if (matches.length !== 1) {
+    throw new Error(
+      `expected exactly one release for ${tag}, found ${matches.length}`,
+    )
+  }
+  const [release] = matches
 
   const assets = release.assets.filter((x) => {
     return x.name === zipFile
