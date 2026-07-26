@@ -75,9 +75,7 @@ const normalizeText = (value: unknown, fallback: string): string =>
 
 const sanitizeBrand = (value: unknown): RuntimeBrand => {
   const brand =
-    value && typeof value === 'object'
-      ? (value as Record<string, unknown>)
-      : {}
+    value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
   return {
     site_name: normalizeText(brand.site_name, COMPILED_BRAND.site_name),
     client_name: normalizeText(brand.client_name, COMPILED_BRAND.client_name),
@@ -128,8 +126,7 @@ const sanitize = (data: unknown): Endpoints | null => {
   if (!bases.length) return null
   return {
     version: Number(raw.version) || 0,
-    profile:
-      typeof raw.profile === 'string' ? raw.profile : DOMAIN_PROFILE.id,
+    profile: typeof raw.profile === 'string' ? raw.profile : DOMAIN_PROFILE.id,
     brand: sanitizeBrand(raw.brand),
     api_bases: bases,
     sub_base: normalizeBase(raw.sub_base),

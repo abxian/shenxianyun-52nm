@@ -2,9 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "identifier": "io.github.clash-verge-rev.clash-verge-rev",
   "bundle": {
-    "targets": [
-      "nsis"
-    ],
+    "targets": ["nsis"],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
@@ -16,11 +14,7 @@
       "nsis": {
         "displayLanguageSelector": true,
         "installerIcon": "icons/icon.ico",
-        "languages": [
-          "SimpChinese",
-          "English",
-          "Russian"
-        ],
+        "languages": ["SimpChinese", "English", "Russian"],
         "installMode": "perMachine",
         "template": "./packages/windows/installer.nsi"
       }

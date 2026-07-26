@@ -51,8 +51,7 @@ export const readSiteProfile = (root = process.cwd()) => {
     siteName: values['site.name'],
     clientName: values['client.name'],
     nodeBrand: values['node.brand'] || values['client.name'],
-    subscriptionNameTemplate:
-      values['subscription.name.template'] || '{code}',
+    subscriptionNameTemplate: values['subscription.name.template'] || '{code}',
     desktopProductName: values['desktop.product.name'],
     desktopIdentifier: values['desktop.identifier'],
     deepLinkScheme: values['deep.link.scheme'],

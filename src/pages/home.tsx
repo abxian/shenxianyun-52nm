@@ -615,7 +615,9 @@ const HomePage = () => {
 
   useEffect(() => {
     document.title = runtimeBrand.client_name
-    getCurrentWindow().setTitle(runtimeBrand.client_name).catch(() => undefined)
+    getCurrentWindow()
+      .setTitle(runtimeBrand.client_name)
+      .catch(() => undefined)
   }, [runtimeBrand])
   const [savedCode, setSavedCode] = useState(
     () => localStorage.getItem(CODE_STORAGE_KEY) || '',
