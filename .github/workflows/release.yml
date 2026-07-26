@@ -229,7 +229,7 @@ jobs:
           tauriScript: pnpm
           args: --target ${{ matrix.target }}
           includeUpdaterJson: true
-          releaseAssetNamePattern: '${{ steps.release_artifact_names.outputs.artifact_basename }}_[version]_[arch][setup][ext]'
+          assetNamePattern: '${{ steps.release_artifact_names.outputs.artifact_basename }}_[version]_[arch][setup][ext]'
 
       - name: Attest Windows bundles
         if: matrix.os == 'windows-latest'
