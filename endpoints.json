@@ -11,9 +11,9 @@
   "bootstrap_proxy": "",
   "updated_at": "2026-07-26T00:00:00+08:00",
   "brand": {
-    "site_name": "神仙订阅中心",
-    "client_name": "神仙云",
-    "node_brand": "神仙云",
+    "site_name": "吾爱云",
+    "client_name": "吾爱云",
+    "node_brand": "吾爱云",
     "subscription_name_template": "{code}",
     "managed_import_scheme": "shenxianyun"
   }

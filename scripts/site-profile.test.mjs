@@ -71,6 +71,9 @@ test('applies a copied brand without retaining 52nm endpoints', () => {
   )
   assert.equal(tauri.productName, 'Demo Cloud')
   assert.equal(tauri.identifier, 'example.demo.cloud')
+  assert.equal(tauri.bundle.longDescription, '演示云')
+  assert.equal(tauri.bundle.shortDescription, '演示云')
+  assert.equal(tauri.bundle.publisher, '演示云')
   assert.deepEqual(tauri.plugins['deep-link'].desktop.schemes, [
     'clash',
     'clash-verge',

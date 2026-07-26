@@ -92,6 +92,10 @@ export const applySiteProfile = (root = process.cwd()) => {
     config.identifier = profile.desktopIdentifier
     if (relative.endsWith('/tauri.conf.json')) {
       config.productName = profile.desktopProductName
+      config.bundle ??= {}
+      config.bundle.longDescription = profile.clientName
+      config.bundle.shortDescription = profile.clientName
+      config.bundle.publisher = profile.clientName
       config.plugins ??= {}
       config.plugins['deep-link'] ??= {}
       config.plugins['deep-link'].desktop ??= {}

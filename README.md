@@ -5,7 +5,7 @@
   <br>
 </h1>
 
-> 52nm 及复制业务线的统一品牌/线路配置见
+> 吾爱云 52nm 及复制业务线的统一品牌/线路配置见
 > [`docs/SITE_PROFILE.md`](docs/SITE_PROFILE.md)。
 
 <h3 align="center">
@@ -31,7 +31,7 @@ A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a
 
 ## Install
 
-请到 52nm 独立发布页面下载对应的安装包：[Release page](https://github.com/abxian/shenxianyun-52nm/releases)<br>
+请到吾爱云 52nm 独立发布页面下载对应的安装包：[Release page](https://github.com/abxian/shenxianyun-52nm/releases)<br>
 Go to the [52nm Release page](https://github.com/abxian/shenxianyun-52nm/releases) to download the corresponding installation package<br>
 Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
 
@@ -39,7 +39,7 @@ Supports Windows (x64/x86), Linux (x64/arm64) and macOS 11+ (intel/apple).
 
 | 版本        | 特征                                     | 链接                                                                                   |
 | :---------- | :--------------------------------------- | :------------------------------------------------------------------------------------- |
-| Stable      | 52nm 正式版，高可靠性，适合日常使用。 | [Release](https://github.com/abxian/shenxianyun-52nm/releases) |
+| Stable      | 吾爱云 52nm 正式版，高可靠性，适合日常使用。 | [Release](https://github.com/abxian/shenxianyun-52nm/releases) |
 
 #### 安装说明和常见问题，请到 [文档页](https://clash-verge-rev.github.io/) 查看
 

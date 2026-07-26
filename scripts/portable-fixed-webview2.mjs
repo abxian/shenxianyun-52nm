@@ -6,6 +6,8 @@ import path from 'path'
 import { context, getOctokit } from '@actions/github'
 import AdmZip from 'adm-zip'
 
+import { readSiteProfile } from './site-profile.mjs'
+
 const target = process.argv.slice(2)[0]
 const alpha = process.argv.slice(2)[1]
 
@@ -43,7 +45,16 @@ async function resolvePortable() {
 
   const zip = new AdmZip()
 
-  zip.addLocalFile(path.join(releaseDir, 'Clash Verge.exe'))
+  const profile = readSiteProfile(process.cwd())
+  const executable = [
+    `${profile.desktopProductName}.exe`,
+    'clash-verge.exe',
+    'Clash Verge.exe',
+  ]
+    .map((name) => path.join(releaseDir, name))
+    .find(fs.existsSync)
+  if (!executable) throw new Error('could not find the desktop executable')
+  zip.addLocalFile(executable)
   zip.addLocalFile(path.join(releaseDir, 'verge-mihomo.exe'))
   zip.addLocalFile(path.join(releaseDir, 'verge-mihomo-alpha.exe'))
   zip.addLocalFolder(path.join(releaseDir, 'resources'), 'resources')
@@ -60,7 +71,7 @@ async function resolvePortable() {
   const packageJson = require('../package.json')
   const { version } = packageJson
 
-  const zipFile = `Clash.Verge_${version}_${arch}_fixed_webview2_portable.zip`
+  const zipFile = `${profile.clientName}_${version}_${arch}_fixed_webview2_portable.zip`
   zip.writeZip(zipFile)
 
   console.log('[INFO]: create portable zip successfully')
@@ -101,4 +112,7 @@ async function resolvePortable() {
   })
 }
 
-resolvePortable().catch(console.error)
+resolvePortable().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

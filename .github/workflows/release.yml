@@ -144,7 +144,7 @@ jobs:
           echo "Publishing release $release_id ($release_url) with $asset_count assets."
 
           gh api --method PATCH repos/{owner}/{repo}/releases/"$release_id" \
-            -f name="神仙云 PC 52nm $TAG_NAME" \
+            -f name="吾爱云 PC 52nm $TAG_NAME" \
             -F body=@release.txt \
             -F draft=false \
             -F prerelease="$PRERELEASE" \
@@ -231,8 +231,8 @@ jobs:
           # build an unsigned .dmg instead of failing the whole release.
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: '神仙云 PC 52nm ${{ github.ref_name }}'
-          releaseBody: '神仙云 PC 52nm 正式版，详细更新内容见 Release 页面。'
+          releaseName: '吾爱云 PC 52nm ${{ github.ref_name }}'
+          releaseBody: '吾爱云 PC 52nm 正式版，详细更新内容见 Release 页面。'
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-rc') }}
           tauriScript: pnpm
@@ -397,7 +397,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{env.VERSION}}
-          name: '神仙云 PC 52nm v${{env.VERSION}}'
+          name: '吾爱云 PC 52nm v${{env.VERSION}}'
           body: 'See release notes for detailed changelog.'
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
@@ -514,7 +514,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{steps.build.outputs.appVersion}}
-          name: '神仙云 PC 52nm v${{steps.build.outputs.appVersion}}'
+          name: '吾爱云 PC 52nm v${{steps.build.outputs.appVersion}}'
           body: 'See release notes for detailed changelog.'
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true

@@ -10,5 +10,5 @@
   <circle cx="60" cy="60" r="42" fill="url(#mark)"/>
   <path d="M43 65c-15 0-27-11-27-25 0-12 10-23 22-25 6-16 21-27 39-27 20 0 37 15 40 35 12 4 21 15 21 28 0 15-12 28-28 28H45c-1 0-2-1-2-2V65z" fill="#fff" transform="translate(0 18) scale(.74)"/>
   <path d="M68 31 38 80h21l-8 41 34-53H63l5-37z" fill="#fff"/>
-  <text x="136" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="54" font-weight="800" fill="currentColor">神仙云</text>
+  <text x="136" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="54" font-weight="800" fill="currentColor">吾爱云</text>
 </svg>
