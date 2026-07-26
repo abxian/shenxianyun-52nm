@@ -301,6 +301,8 @@ async function processRelease(github, options, tag, isAlpha) {
           console.error('[dufs] publish failed:', err.message)
           process.exitCode = 1
         })
+      } else if (!isAlpha) {
+        console.log('[dufs] direct Actions publish disabled for 52nm')
       }
     } catch (error) {
       console.error(
