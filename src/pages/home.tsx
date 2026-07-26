@@ -50,6 +50,7 @@ import {
 } from '@mui/material'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { useLockFn } from 'ahooks'
@@ -64,7 +65,11 @@ import { ClashPortViewer } from '@/components/setting/mods/clash-port-viewer'
 import { ControllerViewer } from '@/components/setting/mods/controller-viewer'
 import { TunnelsViewer } from '@/components/setting/mods/tunnels-viewer'
 import { WebUIViewer } from '@/components/setting/mods/web-ui-viewer'
-import { DOMESTIC_API_HOST, isOfficialHostname } from '@/config/domain-profile'
+import {
+  DOMAIN_PROFILE,
+  DOMESTIC_API_HOST,
+  isOfficialHostname,
+} from '@/config/domain-profile'
 import { useClash } from '@/hooks/use-clash'
 import { useConnectionData } from '@/hooks/use-connection-data'
 import { useProfiles } from '@/hooks/use-profiles'
@@ -102,6 +107,7 @@ import {
   fetchWithVerifiedTls,
   getApiBase,
   getBootstrapProxy,
+  getRuntimeBrand,
   initEndpointDiscovery,
   listApiBases,
   officialDirectRules,
@@ -605,6 +611,12 @@ const HomePage = () => {
   })
 
   const [code, setCode] = useState('')
+  const [runtimeBrand, setRuntimeBrand] = useState(() => getRuntimeBrand())
+
+  useEffect(() => {
+    document.title = runtimeBrand.client_name
+    getCurrentWindow().setTitle(runtimeBrand.client_name).catch(() => undefined)
+  }, [runtimeBrand])
   const [savedCode, setSavedCode] = useState(
     () => localStorage.getItem(CODE_STORAGE_KEY) || '',
   )
@@ -666,7 +678,7 @@ const HomePage = () => {
     // 改为打开 Releases 页让用户手动下载安装。
     if (isMacOS) {
       await openWebUrl(
-        'https://github.com/abxian/shenxianyun-52nm/releases/latest',
+        `https://github.com/${DOMAIN_PROFILE.githubRepository}/releases/latest`,
       ).catch(() => undefined)
       return
     }
@@ -1217,7 +1229,7 @@ const HomePage = () => {
             },
             body: JSON.stringify({
               platform: 'Windows电脑',
-              app_name: '神仙云桌面端',
+              app_name: `${getRuntimeBrand().client_name}桌面端`,
               app_version: DESKTOP_VERSION,
               device_name: navigator.userAgent,
             }),
@@ -1248,7 +1260,7 @@ const HomePage = () => {
       const params = new URLSearchParams({
         client_id: getClientId(),
         platform: 'Windows电脑',
-        app_name: '神仙云桌面端',
+        app_name: `${getRuntimeBrand().client_name}桌面端`,
         app_version: DESKTOP_VERSION,
         device_name: navigator.userAgent,
       })
@@ -1322,7 +1334,7 @@ const HomePage = () => {
           upload_total: pending.uploadTotal,
           download_total: pending.downloadTotal,
           platform: 'Windows电脑',
-          app_name: '神仙云桌面端',
+          app_name: `${getRuntimeBrand().client_name}桌面端`,
           app_version: DESKTOP_VERSION,
           device_name: navigator.userAgent,
         }),
@@ -1388,7 +1400,7 @@ const HomePage = () => {
         body: JSON.stringify({
           client_id: getClientId(),
           platform: 'Windows电脑',
-          app_name: '神仙云桌面端',
+          app_name: `${getRuntimeBrand().client_name}桌面端`,
           app_version: DESKTOP_VERSION,
           device_name: navigator.userAgent,
           upload_bytes: uploadDelta,
@@ -1613,6 +1625,7 @@ const HomePage = () => {
     initEndpointDiscovery(proxyUrlRef.current || undefined)
       .catch(() => undefined)
       .finally(() => {
+        setRuntimeBrand(getRuntimeBrand())
         ensureDomesticApiDirect().catch(() => undefined)
         checkServerConnection().catch(() => undefined)
       })
@@ -3219,7 +3232,7 @@ const HomePage = () => {
                   textShadow: '0 2px 18px rgba(90,110,220,.45)',
                 }}
               >
-                神仙云
+                {runtimeBrand.client_name}
               </Typography>
               <Typography
                 sx={{

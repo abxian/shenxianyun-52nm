@@ -11,6 +11,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent'
 import { extract } from 'tar'
 
 import { log_debug, log_error, log_info, log_success } from './utils.mjs'
+import { applySiteProfile } from './site-profile.mjs'
 
 /**
  * Prebuild script with optimization features:
@@ -22,6 +23,7 @@ import { log_debug, log_error, log_info, log_success } from './utils.mjs'
  */
 
 const cwd = process.cwd()
+applySiteProfile(cwd)
 const TEMP_DIR = path.join(cwd, 'node_modules/.verge')
 const FORCE = process.argv.includes('--force') || process.argv.includes('-f')
 const VERSION_CACHE_FILE = path.join(TEMP_DIR, '.version_cache.json')

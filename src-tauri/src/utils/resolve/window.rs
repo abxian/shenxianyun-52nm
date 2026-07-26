@@ -61,7 +61,7 @@ pub async fn build_new_window() -> Result<WebviewWindow, String> {
         "main", /* the unique window label */
         tauri::WebviewUrl::App(start_page.into()),
     )
-    .title("神仙云")
+    .title(env!("CLIENT_DISPLAY_NAME"))
     .center()
     .decorations(DEFAULT_DECORATIONS)
     .fullscreen(false)

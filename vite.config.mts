@@ -5,6 +5,10 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import svgr from 'vite-plugin-svgr'
 
+import { readSiteProfile } from './scripts/site-profile.mjs'
+
+const siteProfile = readSiteProfile(process.cwd())
+
 export default defineConfig({
   root: 'src',
   server: { port: 3000 },
@@ -35,5 +39,6 @@ export default defineConfig({
   },
   define: {
     OS_PLATFORM: `"${process.platform}"`,
+    __SITE_PROFILE__: JSON.stringify(siteProfile),
   },
 })

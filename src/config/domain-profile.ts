@@ -1,24 +1,16 @@
-/**
- * 52nm 站点绑定配置。
- *
- * 更换网站时优先只改本文件和仓库根目录 endpoints.json。运行时代码不得再散落
- * 写死 API 域名；发行包下载/更新通道属于独立配置，不与网站 API 混在一起。
- */
+/** 由仓库根目录 site-profile.properties 注入。复制项目时只修改该文件。 */
 export const DOMAIN_PROFILE = {
-  id: '52nm',
-  domesticApiBase: 'https://api.52nm.de:5443',
-  apiBases: [
-    'https://api.52nm.de:5443',
-    'https://52nm.de',
-    'https://www.52nm.de',
-  ],
-  discoveryUrls: [
-    'https://api.52nm.de:5443/api/endpoints',
-    'https://raw.githubusercontent.com/abxian/shenxianyun-52nm/main/endpoints.json',
-    'https://52nm.de/api/endpoints',
-    'https://www.52nm.de/api/endpoints',
-  ],
-  officialDomainSuffixes: ['52nm.de'],
+  id: __SITE_PROFILE__.profileId,
+  siteName: __SITE_PROFILE__.siteName,
+  clientName: __SITE_PROFILE__.clientName,
+  nodeBrand: __SITE_PROFILE__.nodeBrand,
+  subscriptionNameTemplate: __SITE_PROFILE__.subscriptionNameTemplate,
+  deepLinkScheme: __SITE_PROFILE__.deepLinkScheme,
+  domesticApiBase: __SITE_PROFILE__.domesticApiBase,
+  apiBases: __SITE_PROFILE__.apiBases,
+  discoveryUrls: __SITE_PROFILE__.discoveryUrls,
+  officialDomainSuffixes: __SITE_PROFILE__.officialDomainSuffixes,
+  githubRepository: __SITE_PROFILE__.githubRepository,
 } as const
 
 export const DOMESTIC_API_HOST = new URL(DOMAIN_PROFILE.domesticApiBase)

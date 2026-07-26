@@ -5,6 +5,9 @@
   <br>
 </h1>
 
+> 52nm 及复制业务线的统一品牌/线路配置见
+> [`docs/SITE_PROFILE.md`](docs/SITE_PROFILE.md)。
+
 <h3 align="center">
 A Clash Meta GUI based on <a href="https://github.com/tauri-apps/tauri">Tauri</a>.
 </h3>

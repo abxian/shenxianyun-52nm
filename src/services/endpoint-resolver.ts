@@ -37,17 +37,60 @@ const allApiBases = (): string[] => {
 // 发现锚点：独立站动态接口优先，GitHub 与国外站点作为备用。
 const DISCOVERY_URLS = [...DOMAIN_PROFILE.discoveryUrls]
 
-// 52nm 版本使用独立缓存，覆盖安装或并行测试时不会读取旧网站线路。
-const STORAGE_KEY = 'shenxianyun.52nm.endpoints'
-const ACTIVE_BASE_KEY = 'shenxianyun.52nm.apiBaseActive'
+// 每个复制项目按 profile.id 使用独立缓存，绝不读取其它站点线路。
+const STORAGE_KEY = `shenxianyun.${DOMAIN_PROFILE.id}.endpoints`
+const ACTIVE_BASE_KEY = `shenxianyun.${DOMAIN_PROFILE.id}.apiBaseActive`
+
+export type RuntimeBrand = {
+  site_name: string
+  client_name: string
+  node_brand: string
+  subscription_name_template: string
+  managed_import_scheme: string
+}
 
 export type Endpoints = {
   version?: number
+  profile?: string
+  brand?: RuntimeBrand
   api_bases?: string[]
   sub_base?: string
   download_base?: string
   bootstrap_proxy?: string
   updated_at?: string
+}
+
+const COMPILED_BRAND: RuntimeBrand = {
+  site_name: DOMAIN_PROFILE.siteName,
+  client_name: DOMAIN_PROFILE.clientName,
+  node_brand: DOMAIN_PROFILE.nodeBrand,
+  subscription_name_template: DOMAIN_PROFILE.subscriptionNameTemplate,
+  managed_import_scheme: DOMAIN_PROFILE.deepLinkScheme,
+}
+
+const normalizeText = (value: unknown, fallback: string): string =>
+  typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, 160)
+    : fallback
+
+const sanitizeBrand = (value: unknown): RuntimeBrand => {
+  const brand =
+    value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {}
+  return {
+    site_name: normalizeText(brand.site_name, COMPILED_BRAND.site_name),
+    client_name: normalizeText(brand.client_name, COMPILED_BRAND.client_name),
+    node_brand: normalizeText(brand.node_brand, COMPILED_BRAND.node_brand),
+    subscription_name_template: normalizeText(
+      brand.subscription_name_template,
+      COMPILED_BRAND.subscription_name_template,
+    ),
+    managed_import_scheme: normalizeText(
+      brand.managed_import_scheme,
+      COMPILED_BRAND.managed_import_scheme,
+    ),
+  }
 }
 
 const normalizeBase = (value: unknown): string => {
@@ -72,12 +115,22 @@ export const fetchWithVerifiedTls = async (
 const sanitize = (data: unknown): Endpoints | null => {
   if (!data || typeof data !== 'object') return null
   const raw = data as Record<string, unknown>
+  if (
+    typeof raw.profile === 'string' &&
+    raw.profile.trim() &&
+    raw.profile.trim() !== DOMAIN_PROFILE.id
+  ) {
+    return null
+  }
   const bases = Array.isArray(raw.api_bases)
     ? raw.api_bases.map(normalizeBase).filter(Boolean)
     : []
   if (!bases.length) return null
   return {
     version: Number(raw.version) || 0,
+    profile:
+      typeof raw.profile === 'string' ? raw.profile : DOMAIN_PROFILE.id,
+    brand: sanitizeBrand(raw.brand),
     api_bases: bases,
     sub_base: normalizeBase(raw.sub_base),
     download_base: normalizeBase(raw.download_base),
@@ -103,6 +156,9 @@ export const getApiBase = (): string => {
 }
 
 export const getEndpoints = (): Endpoints | null => readCache()
+
+export const getRuntimeBrand = (): RuntimeBrand =>
+  readCache()?.brand ?? COMPILED_BRAND
 
 /** 兜底代理（HTTP/SOCKS5）：直连+系统代理都连不上 web 时的最后一条路。无则空串。 */
 export const getBootstrapProxy = (): string =>

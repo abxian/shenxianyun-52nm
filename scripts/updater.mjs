@@ -1,7 +1,9 @@
 import { context, getOctokit } from '@actions/github'
 
+import { readSiteProfile } from './site-profile.mjs'
 import { resolveUpdateLog, resolveUpdateLogDefault } from './updatelog.mjs'
 
+const CLIENT_NAME = readSiteProfile(process.cwd()).clientName
 // Add stable update JSON filenames
 const UPDATE_TAG_NAME = 'updater'
 const UPDATE_JSON_FILE = 'update.json'
@@ -419,10 +421,10 @@ async function publishToDufs(updateData, releaseAssets) {
 
   // 同步下载页使用的固定文件名，避免新版本只更新 /updater/ 而根目录仍是旧安装包。
   const stableAliases = [
-    { suffix: 'x64-setup.exe', name: '神仙云.exe' },
-    { suffix: 'aarch64.dmg', name: '神仙云.dmg' },
-    { suffix: 'amd64.deb', name: '神仙云.deb' },
-    { suffix: 'x86_64.rpm', name: '神仙云.rpm' },
+    { suffix: 'x64-setup.exe', name: `${CLIENT_NAME}.exe` },
+    { suffix: 'aarch64.dmg', name: `${CLIENT_NAME}.dmg` },
+    { suffix: 'amd64.deb', name: `${CLIENT_NAME}.deb` },
+    { suffix: 'x86_64.rpm', name: `${CLIENT_NAME}.rpm` },
   ]
   for (const alias of stableAliases) {
     const asset = releaseAssets.find(
