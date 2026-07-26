@@ -1,12 +1,21 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf, process};
+
+fn profile_error(message: &str) -> ! {
+    eprintln!("site profile error: {message}");
+    process::exit(1);
+}
 
 fn site_profile() -> HashMap<String, String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("src-tauri must have a repository parent")
-        .join("site-profile.properties");
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(repository_root) = manifest_dir.parent() else {
+        profile_error("src-tauri must have a repository parent");
+    };
+    let path = repository_root.join("site-profile.properties");
     println!("cargo:rerun-if-changed={}", path.display());
-    let content = fs::read_to_string(path).expect("read site-profile.properties");
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) => profile_error(&format!("cannot read site-profile.properties: {error}")),
+    };
     content
         .lines()
         .filter_map(|raw| {
@@ -22,12 +31,12 @@ fn site_profile() -> HashMap<String, String> {
 
 fn main() {
     let profile = site_profile();
-    let client_name = profile
-        .get("client.name")
-        .expect("site-profile.properties must define client.name");
-    let managed_import_scheme = profile
-        .get("deep.link.scheme")
-        .expect("site-profile.properties must define deep.link.scheme");
+    let Some(client_name) = profile.get("client.name") else {
+        profile_error("site-profile.properties must define client.name");
+    };
+    let Some(managed_import_scheme) = profile.get("deep.link.scheme") else {
+        profile_error("site-profile.properties must define deep.link.scheme");
+    };
     println!("cargo:rustc-env=CLIENT_DISPLAY_NAME={client_name}");
     println!("cargo:rustc-env=MANAGED_IMPORT_SCHEME={managed_import_scheme}");
 
