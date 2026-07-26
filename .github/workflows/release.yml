@@ -200,6 +200,7 @@ jobs:
           pnpm run prebuild ${{ matrix.target }}
 
       - name: Load release artifact names
+        id: release_artifact_names
         run: node scripts/site-profile-env.mjs
 
       - name: Add Rust Target
@@ -228,7 +229,7 @@ jobs:
           tauriScript: pnpm
           args: --target ${{ matrix.target }}
           includeUpdaterJson: true
-          releaseAssetNamePattern: '${{ env.ARTIFACT_BASENAME }}_[version]_[arch][setup][ext]'
+          releaseAssetNamePattern: '${{ steps.release_artifact_names.outputs.artifact_basename }}_[version]_[arch][setup][ext]'
 
       - name: Attest Windows bundles
         if: matrix.os == 'windows-latest'
