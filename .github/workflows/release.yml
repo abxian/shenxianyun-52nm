@@ -541,6 +541,7 @@ jobs:
     if: ${{ !contains(github.ref_name, '-rc') }}
     name: Release Update
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: [update_tag]
     steps:
       - name: Checkout repository

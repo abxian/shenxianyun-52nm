@@ -331,6 +331,9 @@ async function getSignature(url) {
 // 把各平台更新包从 GitHub 搬运到 dufs /updater/ 下，并生成指向 dufs 的 update.json。
 // 可选独立分发需要仓库 secrets：DUFS_BASE、DUFS_USER、DUFS_PASS。
 async function publishToDufs(updateData, releaseAssets) {
+  const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000
+  const UPLOAD_TIMEOUT_MS = 20 * 60 * 1000
+  const PROBE_TIMEOUT_MS = 60 * 1000
   const base = (process.env.DUFS_BASE || '').replace(/\/+$/, '')
   if (!base) {
     console.log('[dufs] DUFS_BASE not set, skip dufs publish')
@@ -350,6 +353,7 @@ async function publishToDufs(updateData, releaseAssets) {
   await fetch(`${base}/updater`, {
     method: 'MKCOL',
     headers: { Authorization: auth },
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   }).catch(() => {})
   // 同一文件(多平台复用同一 url)只搬运一次
   const uploaded = new Map()
@@ -367,7 +371,9 @@ async function publishToDufs(updateData, releaseAssets) {
       let buf = null
       for (let attempt = 1; attempt <= 4 && !buf; attempt++) {
         try {
-          const res = await fetch(value.url)
+          const res = await fetch(value.url, {
+            signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+          })
           if (!res.ok) {
             console.log(
               `[dufs] ${filename} HTTP ${res.status} (try ${attempt})`,
@@ -393,10 +399,12 @@ async function publishToDufs(updateData, releaseAssets) {
             method: 'PUT',
             headers: { Authorization: auth },
             body: buf,
+            signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
           })
           const head = await fetch(target, {
             method: 'HEAD',
             headers: { Authorization: auth },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
           })
           const uploadedSize = Number(head.headers.get('content-length'))
           putOk = put.ok && head.ok && uploadedSize === buf.length
@@ -441,7 +449,9 @@ async function publishToDufs(updateData, releaseAssets) {
       let buf = null
       for (let attempt = 1; attempt <= 4 && !buf; attempt++) {
         try {
-          const res = await fetch(asset.browser_download_url)
+          const res = await fetch(asset.browser_download_url, {
+            signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+          })
           if (!res.ok) {
             console.log(
               `[dufs] ${alias.name} HTTP ${res.status} (try ${attempt})`,
@@ -468,10 +478,12 @@ async function publishToDufs(updateData, releaseAssets) {
             method: 'PUT',
             headers: { Authorization: auth },
             body: buf,
+            signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
           })
           const head = await fetch(target, {
             method: 'HEAD',
             headers: { Authorization: auth },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
           })
           const uploadedSize = Number(head.headers.get('content-length'))
           putOk = put.ok && head.ok && uploadedSize === buf.length
@@ -496,6 +508,7 @@ async function publishToDufs(updateData, releaseAssets) {
     method: 'PUT',
     headers: { Authorization: auth, 'Content-Type': 'application/json' },
     body: JSON.stringify(dufsData, null, 2),
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   })
   console.log(`[dufs] update.json -> HTTP ${putJson.status}`)
   const failedUploads = [...uploaded.values()].filter((ok) => !ok).length
@@ -506,4 +519,7 @@ async function publishToDufs(updateData, releaseAssets) {
   }
 }
 
-resolveUpdater().catch(console.error)
+resolveUpdater().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})
