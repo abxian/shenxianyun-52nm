@@ -18,7 +18,33 @@ impl CoreManager {
         }
 
         match *self.get_running_mode() {
-            RunningMode::Service => self.start_core_by_service().await,
+            RunningMode::Service => {
+                if let Err(service_error) = self.start_core_by_service().await {
+                    logging!(
+                        warn,
+                        Type::Core,
+                        "Service mode failed to start the core: {service_error}. Falling back to sidecar mode."
+                    );
+
+                    self.set_running_mode(RunningMode::NotRunning);
+                    #[cfg(target_os = "windows")]
+                    self.prepare_windows_sidecar_fallback().await?;
+
+                    if let Err(sidecar_error) = self.start_core_by_sidecar().await {
+                        self.set_running_mode(RunningMode::NotRunning);
+                        anyhow::bail!(
+                            "Core startup failed in both service and sidecar modes. Service error: {service_error}; sidecar error: {sidecar_error}"
+                        );
+                    }
+
+                    logging!(
+                        info,
+                        Type::Core,
+                        "Core recovered in sidecar mode after service startup failure"
+                    );
+                }
+                Ok(())
+            }
             RunningMode::NotRunning | RunningMode::Sidecar => self.start_core_by_sidecar().await,
         }
     }
@@ -74,6 +100,26 @@ impl CoreManager {
     fn after_core_process(&self) {
         let app_handle = Handle::app_handle();
         tauri_plugin_clash_verge_sysinfo::set_app_core_mode(app_handle, self.get_running_mode().to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn prepare_windows_sidecar_fallback(&self) -> Result<()> {
+        let verge = Config::verge().await;
+        if verge.latest_arc().enable_tun_mode.unwrap_or(false) {
+            logging!(
+                warn,
+                Type::Core,
+                "Disabling TUN because the Windows service failed; sidecar fallback will keep the core available"
+            );
+            verge.edit_draft(|draft| {
+                draft.enable_tun_mode = Some(false);
+            });
+            verge.apply();
+            verge.latest_arc().save_file().await?;
+            Config::generate().await?;
+            Handle::refresh_verge();
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]

@@ -76,6 +76,7 @@ Var VC_REDIST_URL
 Var VC_REDIST_EXE
 Var VC_RUNTIME_READY
 Var VC_RUNTIME_NEEDED
+Var HadVergeService
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -622,16 +623,22 @@ FunctionEnd
   Pop $0  ; 0: service exists; other: service not exists
   ; Service exists
   ${If} $0 == 0
-    Push $0
     ; Check if the service is running
     SimpleSC::ServiceIsRunning "clash_verge_service"
     Pop $0 ; returns an errorcode (<>0) otherwise success (0)
     Pop $1 ; returns 1 (service is running) - returns 0 (service is not running)
     ${If} $0 == 0
-      Push $0
       ${If} $1 == 0
         DetailPrint "Restart ${PRODUCTNAME} Service..."
         SimpleSC::StartService "clash_verge_service" "" 30
+        Pop $0
+        ${If} $0 != 0
+          Push $0
+          SimpleSC::GetErrorMessage
+          Pop $1
+          MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service Start Error ($1)"
+          Abort
+        ${EndIf}
       ${EndIf}
     ${ElseIf} $0 != 0
       Push $0
@@ -648,36 +655,142 @@ FunctionEnd
   Pop $0  ; 0: service exists; other: service not exists
   ; Service exists
   ${If} $0 == 0
-    Push $0
     ; Check if the service is running
     SimpleSC::ServiceIsRunning "clash_verge_service"
     Pop $0 ; returns an errorcode (<>0) otherwise success (0)
     Pop $1 ; returns 1 (service is running) - returns 0 (service is not running)
-    ${If} $0 == 0
-      Push $0
-      ${If} $1 == 1
-        DetailPrint "Stop ${PRODUCTNAME} Service..."
-        SimpleSC::StopService "clash_verge_service" 1 30
-        Pop $0 ; returns an errorcode (<>0) otherwise success (0)
-        ${If} $0 == 0
-          DetailPrint "Removing ${PRODUCTNAME} Service..."
-          SimpleSC::RemoveService "clash_verge_service"
-        ${ElseIf} $0 != 0
-          Push $0
-          SimpleSC::GetErrorMessage
-          Pop $0
-          MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service Stop Error ($0)"
-        ${EndIf}
-      ${ElseIf} $1 == 0
-        DetailPrint "Removing ${PRODUCTNAME} Service..."
-        SimpleSC::RemoveService "clash_verge_service"
-      ${EndIf}
-    ${ElseIf} $0 != 0
+    ${If} $0 != 0
       Push $0
       SimpleSC::GetErrorMessage
       Pop $0
       MessageBox MB_OK|MB_ICONSTOP "Check Service Status Error ($0)"
+      Abort
     ${EndIf}
+
+    ${If} $1 == 1
+      DetailPrint "Stopping ${PRODUCTNAME} Service..."
+      SimpleSC::StopService "clash_verge_service" 1 30
+      Pop $0
+      ${If} $0 != 0
+        ; A damaged service can ignore SCM stop requests. Kill only the stale
+        ; service process, then remove its registration before replacing files.
+        DetailPrint "Graceful service stop failed; terminating stale service process..."
+        !if "${INSTALLMODE}" == "currentUser"
+          nsis_tauri_utils::KillProcessCurrentUser "clash-verge-service.exe"
+        !else
+          nsis_tauri_utils::KillProcess "clash-verge-service.exe"
+        !endif
+        Sleep 500
+      ${EndIf}
+    ${EndIf}
+
+    DetailPrint "Removing ${PRODUCTNAME} Service..."
+    SimpleSC::RemoveService "clash_verge_service"
+    Pop $0
+    ${If} $0 != 0
+      ; Retry once after terminating a stale service process.
+      !if "${INSTALLMODE}" == "currentUser"
+        nsis_tauri_utils::KillProcessCurrentUser "clash-verge-service.exe"
+      !else
+        nsis_tauri_utils::KillProcess "clash-verge-service.exe"
+      !endif
+      Sleep 500
+      SimpleSC::RemoveService "clash_verge_service"
+      Pop $0
+    ${EndIf}
+    ${If} $0 != 0
+      Push $0
+      SimpleSC::GetErrorMessage
+      Pop $1
+      MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service Remove Error ($1)"
+      Abort
+    ${EndIf}
+
+    ; The SCM can keep a deleted service entry around briefly. Do not overwrite
+    ; service binaries until the old registration has actually disappeared.
+    StrCpy $R8 0
+    ${Do}
+      Sleep 250
+      SimpleSC::ExistsService "clash_verge_service"
+      Pop $R9
+      ${If} $R9 != 0
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R8 $R8 + 1
+    ${LoopWhile} $R8 < 40
+
+    ${If} $R9 == 0
+      MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service is still pending removal. Please restart Windows and run the installer again."
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro PrepareVergeServiceForUpgrade
+  StrCpy $HadVergeService 0
+  SimpleSC::ExistsService "clash_verge_service"
+  Pop $0
+  ${If} $0 == 0
+    StrCpy $HadVergeService 1
+    DetailPrint "Preparing existing ${PRODUCTNAME} Service for upgrade..."
+    !insertmacro RemoveVergeService
+  ${EndIf}
+!macroend
+
+!macro RemoveStaleInstallFile FILE_PATH
+  ${If} ${FileExists} "${FILE_PATH}"
+    DetailPrint "Removing stale install file: ${FILE_PATH}"
+    ClearErrors
+    Delete "${FILE_PATH}"
+    ${If} ${Errors}
+      MessageBox MB_OK|MB_ICONSTOP "Unable to replace ${FILE_PATH}. Please restart Windows and run the installer again."
+      Abort
+    ${EndIf}
+    ${If} ${FileExists} "${FILE_PATH}"
+      MessageBox MB_OK|MB_ICONSTOP "The old file is still locked: ${FILE_PATH}. Please restart Windows and run the installer again."
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro DisableStalePortableMode
+  ${If} ${FileExists} "$INSTDIR\.config\PORTABLE"
+    DetailPrint "Portable marker detected in an installer directory; switching to installed mode..."
+    ClearErrors
+    Delete "$INSTDIR\.config\PORTABLE.disabled-by-installer"
+    Rename "$INSTDIR\.config\PORTABLE" "$INSTDIR\.config\PORTABLE.disabled-by-installer"
+    ${If} ${Errors}
+      MessageBox MB_OK|MB_ICONSTOP "Unable to disable the stale portable marker in $INSTDIR\.config. Please restart Windows and run the installer again."
+      Abort
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\.config\PORTABLE"
+      MessageBox MB_OK|MB_ICONSTOP "The stale portable marker is still active in $INSTDIR\.config. Installation cannot continue safely."
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro RestoreVergeServiceAfterUpgrade
+  ${If} $HadVergeService == 1
+    IfFileExists "$INSTDIR\resources\clash-verge-service-install.exe" service_installer_found service_installer_missing
+
+    service_installer_missing:
+      MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service installer is missing. Installation cannot continue."
+      Abort
+
+    service_installer_found:
+      DetailPrint "Registering the updated ${PRODUCTNAME} Service..."
+      ClearErrors
+      ExecWait '"$INSTDIR\resources\clash-verge-service-install.exe"' $0
+      ${If} ${Errors}
+        MessageBox MB_OK|MB_ICONSTOP "Failed to run ${PRODUCTNAME} Service installer."
+        Abort
+      ${EndIf}
+      ${If} $0 != 0
+        MessageBox MB_OK|MB_ICONSTOP "${PRODUCTNAME} Service installer failed with exit code $0."
+        Abort
+      ${EndIf}
+      !insertmacro StartVergeService
   ${EndIf}
 !macroend
 
@@ -887,7 +1000,9 @@ Section Install
   nsExec::Exec 'netsh int tcp res'
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro PrepareVergeServiceForUpgrade
   !insertmacro CheckAllVergeProcesses
+  !insertmacro DisableStalePortableMode
 
   ; Ensure startup folders exist
   CreateDirectory "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -930,6 +1045,15 @@ Section Install
 
   !insertmacro SetContext
 
+  ; Never leave a mixture of old and new binaries in the same directory.
+  !insertmacro RemoveStaleInstallFile "$INSTDIR\${MAINBINARYNAME}.exe"
+  {{#each resources}}
+    !insertmacro RemoveStaleInstallFile "$INSTDIR\{{this.[1]}}"
+  {{/each}}
+  {{#each binaries}}
+    !insertmacro RemoveStaleInstallFile "$INSTDIR\{{this}}"
+  {{/each}}
+
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
 
@@ -946,7 +1070,7 @@ Section Install
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
 
-  !insertmacro StartVergeService
+  !insertmacro RestoreVergeServiceAfterUpgrade
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -1068,8 +1192,8 @@ Section Uninstall
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  !insertmacro CheckAllVergeProcesses
   !insertmacro RemoveVergeService
+  !insertmacro CheckAllVergeProcesses
 
   ; Remove cached window state files
   DetailPrint "Removing window-state.json / .window-state.json"
@@ -1264,6 +1388,10 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; Portable data is preserved by default. Remove it only when the user
+    ; explicitly selected "delete app data" during a full uninstall.
+    RmDir /r "$INSTDIR\.config"
+    RmDir "$INSTDIR"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
