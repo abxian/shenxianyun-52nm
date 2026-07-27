@@ -139,6 +139,7 @@ export const AppDataProvider = ({
       lastProfileId = newProfileId
       lastUpdateTime = now
       void queryClient.invalidateQueries({ queryKey: ['getProfiles'] })
+      void queryClient.invalidateQueries({ queryKey: ['getClashInfo'] })
       refreshRules().catch(() => {})
       refreshRuleProviders().catch(() => {})
     }
@@ -187,6 +188,7 @@ export const AppDataProvider = ({
 
   const refreshAll = useCallback(async () => {
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['getClashInfo'] }),
       refreshProxy(),
       refreshClashConfig(),
       refreshRules(),

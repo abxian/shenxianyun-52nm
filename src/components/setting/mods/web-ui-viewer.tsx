@@ -5,10 +5,10 @@ import { useImperativeHandle, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { BaseDialog, BaseEmpty, DialogRef } from '@/components/base'
-import { useClashInfo } from '@/hooks/use-clash'
 import { useVerge } from '@/hooks/use-verge'
-import { openWebUrl } from '@/services/cmds'
+import { getClashInfo, getProfiles, openWebUrl } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
+import { resolveWebUiUrl } from '@/utils/web-ui-url'
 
 import { WebUIItem } from './web-ui-item'
 
@@ -21,7 +21,6 @@ const DEFAULT_WEB_UI_LIST = [
 export function WebUIViewer({ ref }: { ref?: Ref<DialogRef> }) {
   const { t } = useTranslation()
 
-  const { clashInfo } = useClashInfo()
   const { verge, patchVerge, mutateVerge } = useVerge()
 
   const [open, setOpen] = useState(false)
@@ -71,25 +70,13 @@ export function WebUIViewer({ ref }: { ref?: Ref<DialogRef> }) {
   const handleOpenUrl = useLockFn(async (value?: string) => {
     if (!value) return
     try {
-      let url = value.trim().replaceAll('%host', '127.0.0.1')
-
-      if (url.includes('%port') || url.includes('%secret')) {
-        if (!clashInfo) throw new Error('failed to get clash info')
-        if (!clashInfo.server?.includes(':')) {
-          throw new Error(`failed to parse the server "${clashInfo.server}"`)
-        }
-
-        const port = clashInfo.server
-          .slice(clashInfo.server.indexOf(':') + 1)
-          .trim()
-
-        url = url.replaceAll('%port', port || '9097')
-        url = url.replaceAll(
-          '%secret',
-          encodeURIComponent(clashInfo.secret || ''),
-        )
-      }
-
+      // Always read the current runtime/profile pair before opening. The query
+      // cache may still describe the controller used by the previous profile.
+      const [clashInfo, profiles] = await Promise.all([
+        getClashInfo(),
+        getProfiles(),
+      ])
+      const url = resolveWebUiUrl(value, clashInfo, profiles.current)
       await openWebUrl(url)
     } catch (e: any) {
       showNotice.error(e)
