@@ -13,8 +13,8 @@ import { resolveWebUiUrl } from '@/utils/web-ui-url'
 import { WebUIItem } from './web-ui-item'
 
 const DEFAULT_WEB_UI_LIST = [
+  'https://yacd.metacubex.one/?hostname=%host&port=%port&secret=%secret#/connections',
   'https://metacubex.github.io/metacubexd/#/setup?http=true&hostname=%host&port=%port&secret=%secret',
-  'https://yacd.metacubex.one/?hostname=%host&port=%port&secret=%secret',
   'https://board.zash.run.place/#/setup?http=true&hostname=%host&port=%port&secret=%secret',
 ]
 
