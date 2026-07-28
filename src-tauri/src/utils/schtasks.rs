@@ -224,6 +224,21 @@ fn decode_with_code_page(bytes: &[u8], code_page: u32) -> Option<String> {
 }
 
 fn decode_console_output(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let wide = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16_lossy(&wide);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let wide = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16_lossy(&wide);
+    }
+
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_string();
     }
@@ -259,6 +274,48 @@ fn schtasks_output(mut cmd: Command) -> Result<Output> {
     cmd.creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| anyhow!("failed to execute schtasks: {}", e))
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
+}
+
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    let start = xml.find(&start_tag)? + start_tag.len();
+    let end = xml[start..].find(&end_tag)? + start;
+    Some(xml_unescape(xml[start..end].trim()))
+}
+
+fn task_launch_target(mode: TaskMode) -> Result<Option<String>> {
+    let output = schtasks_output({
+        let mut cmd = Command::new("schtasks");
+        cmd.args(["/Query", "/TN", mode.name(), "/XML"]);
+        cmd
+    })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(extract_xml_tag(
+        &decode_console_output(&output.stdout),
+        "Command",
+    ))
+}
+
+/// 返回现有开机启动任务指向的可执行文件。诊断功能用它识别旧安装目录残留；
+/// 查询失败只表示没有可报告的目标，不影响应用正常启动。
+pub fn auto_launch_task_targets() -> Vec<String> {
+    [TaskMode::User, TaskMode::Admin]
+        .into_iter()
+        .filter_map(|mode| task_launch_target(mode).ok().flatten())
+        .collect()
 }
 
 pub fn is_task_enabled(mode: TaskMode) -> Result<bool> {
@@ -380,4 +437,18 @@ pub fn is_auto_launch_enabled() -> Result<bool> {
     }
 
     is_task_enabled(TaskMode::User)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_xml_tag;
+
+    #[test]
+    fn extracts_and_unescapes_task_command() {
+        let xml = r#"<Exec><Command>C:\Program Files\A &amp; B\app.exe</Command></Exec>"#;
+        assert_eq!(
+            extract_xml_tag(xml, "Command").as_deref(),
+            Some(r"C:\Program Files\A & B\app.exe")
+        );
+    }
 }

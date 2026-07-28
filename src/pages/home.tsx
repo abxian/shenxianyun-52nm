@@ -85,6 +85,7 @@ import {
   enhanceProfiles,
   factoryResetApp,
   getProfiles,
+  getServiceDiagnostics,
   getSystemProxy,
   importProfile,
   installService,
@@ -651,7 +652,7 @@ const HomePage = () => {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [resetRebuildConfig, setResetRebuildConfig] = useState(true)
-  const [resetRepairService, setResetRepairService] = useState(true)
+  const [resetRepairService, setResetRepairService] = useState(false)
   const [resetCreateBackup, setResetCreateBackup] = useState(true)
   // 到期提示弹窗
   const [expiredDialogOpen, setExpiredDialogOpen] = useState(false)
@@ -2518,6 +2519,12 @@ const HomePage = () => {
         detail: '检测中…',
       },
       {
+        key: 'install',
+        label: '安装与残留',
+        status: 'pending',
+        detail: '检测中…',
+      },
+      {
         key: 'sysproxy',
         label: '系统代理',
         status: 'pending',
@@ -2574,9 +2581,14 @@ const HomePage = () => {
         ),
       )
 
+    const diagnostics = await getServiceDiagnostics().catch(() => null)
+
     try {
       const v = await getVersion()
-      set('core', 'ok', `运行中${v?.version ? ` v${v.version}` : ''}`)
+      const pid = diagnostics?.sidecarPid
+        ? ` · PID ${diagnostics.sidecarPid}`
+        : ''
+      set('core', 'ok', `运行中${v?.version ? ` v${v.version}` : ''}${pid}`)
     } catch {
       set(
         'core',
@@ -2607,16 +2619,49 @@ const HomePage = () => {
     )
     set(
       'service',
-      isServiceOk ? 'ok' : 'warn',
-      isServiceOk ? '已安装' : '未安装（TUN 需要它）',
-      isServiceOk
-        ? undefined
-        : async () => {
-            await installService()
+      diagnostics?.serviceProtocolMismatch
+        ? 'fail'
+        : isServiceOk
+          ? 'ok'
+          : 'warn',
+      diagnostics?.serviceProtocolMismatch
+        ? '协议与当前客户端不匹配（不会自动弹管理员认证）'
+        : isServiceOk
+          ? '已安装且协议匹配'
+          : '未安装或不可连接（TUN 需要它）',
+      diagnostics?.serviceProtocolMismatch
+        ? async () => {
+            await repairService()
             await restartCore()
-          },
-      isServiceOk ? undefined : '安装服务',
+          }
+        : isServiceOk
+          ? undefined
+          : async () => {
+              await installService()
+              await restartCore()
+            },
+      diagnostics?.serviceProtocolMismatch
+        ? '修复服务'
+        : isServiceOk
+          ? undefined
+          : '安装服务',
     )
+    if (diagnostics) {
+      const appName =
+        diagnostics.appPath.split(/[\\/]/).pop() || diagnostics.appPath
+      const coreName =
+        diagnostics.expectedCorePath.split(/[\\/]/).pop() ||
+        diagnostics.expectedCorePath
+      set(
+        'install',
+        diagnostics.warnings.length > 0 ? 'warn' : 'ok',
+        diagnostics.warnings.length > 0
+          ? diagnostics.warnings.join('；')
+          : `当前 ${appName} · 核心 ${coreName} · ${diagnostics.runningMode}`,
+      )
+    } else {
+      set('install', 'warn', '无法读取安装、核心和开机启动诊断信息')
+    }
 
     if (systemProxyConfigOn && !systemProxyOn) {
       set(
@@ -2918,17 +2963,6 @@ const HomePage = () => {
     setResetting(true)
     try {
       const stableClientId = getClientId()
-      await sendClientPresence(false).catch(() => undefined)
-
-      if (resetCreateBackup && resetRebuildConfig) {
-        await createLocalBackup()
-      }
-
-      // 先把系统代理 / TUN 关掉，避免坏代理残留在系统里。
-      await patchVerge({ enable_tun_mode: false }).catch(() => {})
-      await toggleSystemProxy(false).catch(() => {})
-      await invoke('apply_dns_config', { apply: false }).catch(() => {})
-      await patchClashMode('rule').catch(() => {})
 
       if (resetRepairService) {
         setStatus('正在修复系统服务，请确认管理员授权…')
@@ -2940,6 +2974,18 @@ const HomePage = () => {
         await restartApp()
         return
       }
+
+      if (resetCreateBackup) {
+        await createLocalBackup()
+      }
+
+      // 管理员授权和备份都成功后再改变网络状态。这样用户取消授权或修复
+      // 失败时，不会被错误标记离线，也不会留下代理 / TUN 被关闭的副作用。
+      await sendClientPresence(false).catch(() => undefined)
+      await patchVerge({ enable_tun_mode: false }).catch(() => {})
+      await toggleSystemProxy(false).catch(() => {})
+      await invoke('apply_dns_config', { apply: false }).catch(() => {})
+      await patchClashMode('rule').catch(() => {})
 
       Object.keys(localStorage)
         .filter(
@@ -4494,7 +4540,7 @@ const HomePage = () => {
                       }
                     />
                   }
-                  label="同时修复系统服务（协议不匹配时推荐）"
+                  label="同时修复系统服务（仅协议不匹配时勾选，需要管理员授权）"
                 />
               </Stack>
               <Typography

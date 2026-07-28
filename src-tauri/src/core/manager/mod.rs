@@ -78,6 +78,14 @@ impl CoreManager {
         Arc::clone(&self.state.load().running_mode.load())
     }
 
+    pub fn get_sidecar_pid(&self) -> Option<u32> {
+        self.state
+            .load()
+            .child_sidecar
+            .load_full()
+            .map(|child| child.pid())
+    }
+
     pub fn take_child_sidecar(&self) -> Option<CommandChild> {
         self.state
             .load()

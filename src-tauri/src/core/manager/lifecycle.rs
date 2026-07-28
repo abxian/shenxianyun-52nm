@@ -133,6 +133,18 @@ impl CoreManager {
             return;
         }
 
+        if matches!(
+            SERVICE_MANAGER.current().await,
+            ServiceStatus::NeedsReinstall
+        ) {
+            logging!(
+                warn,
+                Type::Service,
+                "服务协议不匹配，跳过启动等待并回退到 Sidecar"
+            );
+            return;
+        }
+
         let max_times = timing::SERVICE_WAIT_MAX.as_millis() / timing::SERVICE_WAIT_INTERVAL.as_millis();
         let backoff = ConstantBuilder::default()
             .with_delay(timing::SERVICE_WAIT_INTERVAL)

@@ -324,10 +324,12 @@ fn check_output_error(output: &std::process::Output) -> Option<(i32, Cow<'_, str
 fn reinstall_service() -> Result<()> {
     logging!(info, Type::Service, "reinstall service");
 
-    // 先卸载服务
-    if let Err(err) = uninstall_service() {
-        logging!(warn, Type::Service, "failed to uninstall service: {}", err);
-    }
+    // 卸载需要管理员授权。用户取消或卸载失败时必须立即停止，不能继续弹出
+    // 第二次安装授权窗口，否则一次“取消”会变成连续认证循环。
+    uninstall_service().map_err(|err| {
+        logging!(error, Type::Service, "failed to uninstall service: {}", err);
+        err
+    })?;
 
     // 再安装服务
     match install_service() {
@@ -523,12 +525,21 @@ impl ServiceManager {
 
     pub async fn refresh(&self) -> Result<()> {
         self.run_operation(async {
-            self.apply_service_status(if clash_verge_service_ipc::is_reinstall_service_needed().await {
-                ServiceStatus::NeedsReinstall
-            } else {
-                ServiceStatus::Ready
-            })
-            .await
+            // 启动阶段只检测，不触发任何需要管理员授权的修复操作。
+            // 协议不匹配时回退到 Sidecar，并由用户在界面中明确点击修复。
+            if clash_verge_service_ipc::is_reinstall_service_needed().await {
+                self.set_status(ServiceStatus::NeedsReinstall);
+                logging!(
+                    warn,
+                    Type::Service,
+                    "服务协议不匹配，等待用户明确执行修复"
+                );
+                bail!("service protocol mismatch; explicit repair required");
+            }
+
+            self.set_status(ServiceStatus::Ready);
+            logging!(info, Type::Service, "服务就绪，直接启动");
+            Ok(())
         })
         .await
     }

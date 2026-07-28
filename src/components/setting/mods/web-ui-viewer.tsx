@@ -1,4 +1,5 @@
 import { Box, Button, Typography } from '@mui/material'
+import { ask } from '@tauri-apps/plugin-dialog'
 import { useLockFn } from 'ahooks'
 import type { Ref } from 'react'
 import { useImperativeHandle, useMemo, useState } from 'react'
@@ -70,6 +71,25 @@ export function WebUIViewer({ ref }: { ref?: Ref<DialogRef> }) {
   const handleOpenUrl = useLockFn(async (value?: string) => {
     if (!value) return
     try {
+      if (!verge?.enable_external_controller) {
+        const confirmed = await ask(
+          'Web 管理页面需要启用本机控制接口，启用时会重启一次代理内核。是否继续？',
+          {
+            title: '启用 Web 管理',
+            kind: 'warning',
+          },
+        )
+        if (!confirmed) return
+        await patchVerge({ enable_external_controller: true })
+      }
+
+      if (!verge?.enable_system_proxy && !verge?.enable_tun_mode) {
+        showNotice.info(
+          '当前系统代理和 TUN 都未开启。Web 管理可以打开，但只有实际经过本客户端的连接才会显示流量和节点。',
+          8000,
+        )
+      }
+
       // Always read the current runtime/profile pair before opening. The query
       // cache may still describe the controller used by the previous profile.
       const [clashInfo, profiles] = await Promise.all([

@@ -555,6 +555,29 @@ export const repairService = async () => {
   return invoke<void>('repair_service')
 }
 
+export interface ServiceDiagnostics {
+  appPath: string
+  appHomePath: string
+  configuredCore: string
+  expectedCorePath: string
+  expectedCoreExists: boolean
+  servicePath: string
+  servicePayloadExists: boolean
+  runningMode: string
+  sidecarPid?: number
+  serviceStatus: string
+  serviceIpcPath: string
+  serviceIpcExists: boolean
+  serviceProtocolMismatch: boolean
+  autoLaunchEnabled: boolean
+  autoLaunchTargets: string[]
+  warnings: string[]
+}
+
+export const getServiceDiagnostics = async () => {
+  return invoke<ServiceDiagnostics>('get_service_diagnostics')
+}
+
 // 系统服务是否可用
 export const isServiceAvailable = async () => {
   try {
