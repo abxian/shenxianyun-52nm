@@ -1,6 +1,6 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
-import { DOMAIN_PROFILE, DOMESTIC_API_HOST } from '@/config/domain-profile'
+import { DOMAIN_PROFILE } from '@/config/domain-profile'
 
 /**
  * 端点发现（去掉写死 sub.jc116.com）：
@@ -212,23 +212,16 @@ const probeOnce = async (
   }
 }
 
-const isDomesticPrimary = (base: string): boolean => {
-  try {
-    return new URL(base).hostname === DOMESTIC_API_HOST
-  } catch {
-    return false
-  }
-}
-
 // 判断一条线路是否可用：先本机直连；直连不通且传了 proxyUrl（内核在跑）时，
 // 再经内核端口重试一次——内核带 52nm.de 直连规则，能绕开系统级
 // OpenClash/fake-ip 把自家服务器误路由到国外节点的问题。任一成功即可用。
 const reachable = async (base: string, proxyUrl?: string): Promise<boolean> => {
   const url = `${base}/api/app-version?_=${Date.now()}`
   if (await probeOnce(url, undefined, 3500)) return true
-  if (isDomesticPrimary(base)) return false
 
-  // 直连失败后并发尝试内核代理和后台兜底，避免串行等待 14 秒。
+  // 国内主线路也必须允许代理兜底：浏览器能访问而系统 DNS 被 fake-ip
+  // 接管时，直连会失败，但经当前内核仍能正确完成 TLS 与 API 检测。
+  // 所有线路在直连失败后并发尝试内核代理和后台兜底，避免串行等待。
   const boot = getBootstrapProxy()
   const fallbacks = [proxyUrl, boot]
     .filter((value): value is string => Boolean(value))
