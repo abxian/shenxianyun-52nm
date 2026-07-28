@@ -4,7 +4,7 @@ use crate::{
     core::{CoreManager, handle, tray, validate::ValidationOutcome},
     utils::help::{mask_err, mask_url},
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use clash_verge_logging::{Type, logging, logging_error};
 use smartstring::alias::String;
 use tauri::Emitter as _;
@@ -183,7 +183,7 @@ async fn perform_profile_update(
     if is_mannual_trigger {
         handle::Handle::notice_message("update_failed_even_with_clash", format!("{profile_name} - {last_err}"));
     }
-    Ok(is_current)
+    bail!("订阅下载失败，请检查网络或订阅地址后重试")
 }
 
 pub async fn update_profile(
@@ -195,37 +195,88 @@ pub async fn update_profile(
 ) -> Result<()> {
     logging!(info, Type::Config, "[订阅更新] 开始更新订阅 {}", uid);
     let url_opt = should_update_profile(uid, ignore_auto_update).await?;
+    let previous_profile = if url_opt.is_some() {
+        let profile = Config::profiles()
+            .await
+            .latest_arc()
+            .get_item(uid)?
+            .clone();
+        let content = profile.read_file().await?;
+        Some((profile, content))
+    } else {
+        None
+    };
 
     let should_refresh = match url_opt {
         Some((url, opt)) => {
-            perform_profile_update(uid, &url, opt.as_ref(), option, is_mannual_trigger).await? && auto_refresh
+            match perform_profile_update(uid, &url, opt.as_ref(), option, is_mannual_trigger).await {
+                Ok(is_current) => is_current && auto_refresh,
+                Err(error) => {
+                    if let Some((profile, content)) = previous_profile.as_ref()
+                        && let Err(restore_error) = restore_profile_update(uid, profile, content).await
+                    {
+                        return Err(anyhow!(
+                            "{error}; 更新前订阅恢复失败: {restore_error}"
+                        ));
+                    }
+                    return Err(error);
+                }
+            }
         }
         None => auto_refresh,
     };
 
     if should_refresh {
         logging!(info, Type::Config, "[订阅更新] 更新内核配置");
-        match CoreManager::global().update_config_with_force(is_mannual_trigger).await {
+        match CoreManager::global().update_config_forced().await {
             Ok(outcome) if outcome.is_valid() => {
                 logging!(info, Type::Config, "[订阅更新] 更新成功");
                 handle::Handle::refresh_clash();
             }
-            Ok(outcome @ (ValidationOutcome::Skipped { .. } | ValidationOutcome::Busy)) if !is_mannual_trigger => {
-                logging!(info, Type::Config, "[订阅更新] 本次配置刷新已跳过: {}", outcome);
-            }
             Ok(outcome) => {
                 let message = outcome.to_string();
                 logging!(error, Type::Config, "[订阅更新] 更新失败: {}", message);
-                handle::Handle::notice_message("update_failed", message);
+                handle::Handle::notice_message("update_failed", message.clone());
+                if let Some((profile, content)) = previous_profile.as_ref()
+                    && let Err(error) = restore_profile_update(uid, profile, content).await
+                {
+                    bail!("{message}; 更新前订阅恢复失败: {error}");
+                }
+                bail!(message);
             }
             Err(err) => {
                 logging!(error, Type::Config, "[订阅更新] 更新失败: {}", err);
                 handle::Handle::notice_message("update_failed", format!("{err}"));
-                logging!(error, Type::Config, "{err}");
+                if let Some((profile, content)) = previous_profile.as_ref()
+                    && let Err(restore_error) = restore_profile_update(uid, profile, content).await
+                {
+                    return Err(anyhow!(
+                        "{err}; 更新前订阅恢复失败: {restore_error}"
+                    ));
+                }
+                return Err(err);
             }
         }
     }
 
+    Ok(())
+}
+
+async fn restore_profile_update(uid: &String, profile: &PrfItem, content: &String) -> Result<()> {
+    let mut restore_item = profile.clone();
+    restore_item.file_data = Some(content.clone());
+    profiles_draft_update_item_safe(uid, &mut restore_item).await?;
+    let is_current = Config::profiles()
+        .await
+        .latest_arc()
+        .is_current_profile_index(uid);
+    if is_current {
+        let outcome = CoreManager::global().update_config_forced().await?;
+        if !outcome.is_valid() {
+            bail!("恢复更新前订阅后重新应用失败: {outcome}");
+        }
+        handle::Handle::refresh_clash();
+    }
     Ok(())
 }
 

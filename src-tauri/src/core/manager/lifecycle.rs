@@ -12,6 +12,20 @@ use tauri_plugin_clash_verge_sysinfo;
 
 impl CoreManager {
     pub async fn start_core(&self) -> Result<()> {
+        let _guard = self.lifecycle_lock.lock().await;
+        self.start_core_locked().await
+    }
+
+    async fn start_core_locked(&self) -> Result<()> {
+        if !matches!(*self.get_running_mode(), RunningMode::NotRunning) {
+            logging!(
+                info,
+                Type::Core,
+                "Core start requested while already running; stopping the tracked instance first"
+            );
+            self.stop_core_locked().await?;
+        }
+
         self.prepare_startup().await;
         defer! {
             self.after_core_process();
@@ -50,6 +64,11 @@ impl CoreManager {
     }
 
     pub async fn stop_core(&self) -> Result<()> {
+        let _guard = self.lifecycle_lock.lock().await;
+        self.stop_core_locked().await
+    }
+
+    async fn stop_core_locked(&self) -> Result<()> {
         CLASH_LOGGER.clear_logs().await;
         defer! {
             self.after_core_process();
@@ -66,9 +85,10 @@ impl CoreManager {
     }
 
     pub async fn restart_core(&self) -> Result<()> {
+        let _guard = self.lifecycle_lock.lock().await;
         logging!(info, Type::Core, "Restarting core");
-        self.stop_core().await?;
-        self.start_core().await
+        self.stop_core_locked().await?;
+        self.start_core_locked().await
     }
 
     pub async fn change_core(&self, clash_core: &String) -> Result<(), String> {
@@ -97,7 +117,7 @@ impl CoreManager {
         });
     }
 
-    fn after_core_process(&self) {
+    pub(super) fn after_core_process(&self) {
         let app_handle = Handle::app_handle();
         tauri_plugin_clash_verge_sysinfo::set_app_core_mode(app_handle, self.get_running_mode().to_string());
     }

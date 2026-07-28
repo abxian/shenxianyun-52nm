@@ -7,13 +7,13 @@ import { showNotice } from '@/services/notice-service'
 import { useVerge } from './use-verge'
 
 export interface SystemState {
-  runningMode: 'Sidecar' | 'Service'
+  runningMode: 'NotRunning' | 'Sidecar' | 'Service'
   isAdminMode: boolean
   isServiceOk: boolean
 }
 
 const defaultSystemState = {
-  runningMode: 'Sidecar',
+  runningMode: 'NotRunning',
   isAdminMode: false,
   isServiceOk: false,
 } as SystemState

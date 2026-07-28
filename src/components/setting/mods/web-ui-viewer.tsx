@@ -4,6 +4,7 @@ import { useLockFn } from 'ahooks'
 import type { Ref } from 'react'
 import { useImperativeHandle, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { getVersion } from 'tauri-plugin-mihomo-api'
 
 import { BaseDialog, BaseEmpty, DialogRef } from '@/components/base'
 import { useVerge } from '@/hooks/use-verge'
@@ -81,6 +82,23 @@ export function WebUIViewer({ ref }: { ref?: Ref<DialogRef> }) {
         )
         if (!confirmed) return
         await patchVerge({ enable_external_controller: true })
+      }
+
+      let controllerReady = false
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        try {
+          const version = await getVersion()
+          if (version?.version) {
+            controllerReady = true
+            break
+          }
+        } catch {
+          // 启用控制接口后内核会短暂重载，等待它真正可访问。
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200 + attempt * 100))
+      }
+      if (!controllerReady) {
+        throw new Error('核心控制器未启动，请先启动代理或运行一键自检')
       }
 
       if (!verge?.enable_system_proxy && !verge?.enable_tun_mode) {

@@ -6,6 +6,7 @@ use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use clash_verge_logger::AsyncLogger;
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::{
     fmt,
     sync::{
@@ -40,6 +41,8 @@ impl fmt::Display for RunningMode {
 #[derive(Debug)]
 pub struct CoreManager {
     state: ArcSwap<State>,
+    sidecar_state_lock: Mutex<()>,
+    lifecycle_lock: tokio::sync::Mutex<()>,
     last_update: ArcSwapOption<Instant>,
     config_update_in_progress: AtomicBool,
 }
@@ -63,6 +66,8 @@ impl Default for CoreManager {
     fn default() -> Self {
         Self {
             state: ArcSwap::new(Arc::new(State::default())),
+            sidecar_state_lock: Mutex::new(()),
+            lifecycle_lock: tokio::sync::Mutex::new(()),
             last_update: ArcSwapOption::new(None),
             config_update_in_progress: AtomicBool::new(false),
         }
@@ -79,6 +84,7 @@ impl CoreManager {
     }
 
     pub fn get_sidecar_pid(&self) -> Option<u32> {
+        let _guard = self.sidecar_state_lock.lock();
         self.state
             .load()
             .child_sidecar
@@ -87,6 +93,7 @@ impl CoreManager {
     }
 
     pub fn take_child_sidecar(&self) -> Option<CommandChild> {
+        let _guard = self.sidecar_state_lock.lock();
         self.state
             .load()
             .child_sidecar
@@ -104,8 +111,25 @@ impl CoreManager {
     }
 
     pub fn set_running_child_sidecar(&self, child: CommandChild) {
+        let _guard = self.sidecar_state_lock.lock();
         let state = self.state.load();
         state.child_sidecar.store(Some(Arc::new(child)));
+    }
+
+    pub fn clear_running_child_sidecar(&self, pid: u32) -> bool {
+        let _guard = self.sidecar_state_lock.lock();
+        let state = self.state.load();
+        let is_current = state
+            .child_sidecar
+            .load_full()
+            .is_some_and(|child| child.pid() == pid);
+        if is_current {
+            state.child_sidecar.store(None);
+            state
+                .running_mode
+                .store(Arc::new(RunningMode::NotRunning));
+        }
+        is_current
     }
 
     pub fn set_last_update(&self, time: Instant) {

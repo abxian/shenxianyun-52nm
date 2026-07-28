@@ -7,6 +7,7 @@ use clash_verge_logging::{Type, logging};
 use smartstring::alias::String;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager as _};
 
 const FACTORY_RESET_FILES: &[&str] = &[
@@ -21,21 +22,104 @@ const FACTORY_RESET_FILES: &[&str] = &[
     ".encryption_key",
 ];
 
-fn remove_factory_reset_config(app_dir: &Path) -> std::io::Result<usize> {
-    let mut removed = 0;
+const FACTORY_RESET_STAGING_PREFIX: &str = ".factory-reset-staging-";
 
-    for &name in FACTORY_RESET_FILES {
-        let path = app_dir.join(name);
-        if path.exists() {
-            fs::remove_file(path)?;
-            removed += 1;
+fn clean_stale_factory_reset_staging(app_dir: &Path) {
+    let Ok(entries) = fs::read_dir(app_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_staging = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(FACTORY_RESET_STAGING_PREFIX));
+        if is_staging
+            && path.is_dir()
+            && let Err(error) = fs::remove_dir_all(&path)
+        {
+            logging!(
+                warn,
+                Type::System,
+                "无法清理上次彻底重置的暂存目录 {}: {}",
+                path.display(),
+                error
+            );
         }
     }
+}
 
+fn remove_factory_reset_config(app_dir: &Path) -> std::io::Result<usize> {
+    clean_stale_factory_reset_staging(app_dir);
+
+    let mut targets = FACTORY_RESET_FILES
+        .iter()
+        .map(|name| app_dir.join(name))
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
     let profiles_dir = app_dir.join("profiles");
     if profiles_dir.exists() {
-        fs::remove_dir_all(profiles_dir)?;
-        removed += 1;
+        targets.push(profiles_dir);
+    }
+    if targets.is_empty() {
+        return Ok(0);
+    }
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging_dir = app_dir.join(format!(
+        "{FACTORY_RESET_STAGING_PREFIX}{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir(&staging_dir)?;
+
+    let mut staged = Vec::with_capacity(targets.len());
+    for source in targets {
+        let Some(file_name) = source.file_name() else {
+            continue;
+        };
+        let destination = staging_dir.join(file_name);
+        if let Err(error) = fs::rename(&source, &destination) {
+            let mut rollback_failures = Vec::new();
+            for (original, staged_path) in staged.iter().rev() {
+                if let Err(rollback_error) = fs::rename(staged_path, original) {
+                    rollback_failures.push(format!(
+                        "{}: {}",
+                        original.display(),
+                        rollback_error
+                    ));
+                }
+            }
+            let _ = fs::remove_dir(&staging_dir);
+            let rollback_detail = if rollback_failures.is_empty() {
+                "已回滚此前移动的配置".to_owned()
+            } else {
+                format!("回滚失败: {}", rollback_failures.join("; "))
+            };
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "无法暂存待重置配置 {}: {}; {}",
+                    source.display(),
+                    error,
+                    rollback_detail
+                ),
+            ));
+        }
+        staged.push((source, destination));
+    }
+
+    let removed = staged.len();
+    if let Err(error) = fs::remove_dir_all(&staging_dir) {
+        logging!(
+            warn,
+            Type::System,
+            "配置已从运行目录移除，但暂存目录清理失败 {}: {}",
+            staging_dir.display(),
+            error
+        );
     }
 
     Ok(removed)
@@ -100,7 +184,6 @@ pub async fn restart_app() -> CmdResult<()> {
 pub async fn factory_reset_app() -> CmdResult<()> {
     logging!(info, Type::System, "开始彻底重置并重建客户端配置");
     handle::Handle::global().set_is_exiting();
-    utils::server::shutdown_embedded_server();
 
     if !feat::clean_async().await {
         logging!(
@@ -110,8 +193,20 @@ pub async fn factory_reset_app() -> CmdResult<()> {
         );
     }
 
-    let app_dir = dirs::app_home_dir().stringify_err()?;
-    let removed = remove_factory_reset_config(&app_dir).stringify_err()?;
+    let reset_result: CmdResult<usize> = async {
+        let app_dir = dirs::app_home_dir().stringify_err()?;
+        remove_factory_reset_config(&app_dir).stringify_err()
+    }
+    .await;
+    let removed = match reset_result {
+        Ok(removed) => removed,
+        Err(error) => {
+            handle::Handle::global().clear_is_exiting();
+            logging!(error, Type::System, "彻底重置失败并已恢复运行状态: {}", error);
+            return Err(error);
+        }
+    };
+    utils::server::shutdown_embedded_server();
     logging!(
         info,
         Type::System,
@@ -156,7 +251,6 @@ pub async fn copy_icon_file(path: String, icon_info: feat::IconInfo) -> CmdResul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn factory_reset_removes_only_generated_config() -> std::io::Result<()> {

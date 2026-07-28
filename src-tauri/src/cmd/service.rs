@@ -130,7 +130,7 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
     Ok(ServiceDiagnostics {
         app_path: app_path.to_string_lossy().into_owned(),
         app_home_path: app_home_path.to_string_lossy().into_owned(),
-        configured_core,
+        configured_core: configured_core.to_string(),
         expected_core_path: expected_core_path.to_string_lossy().into_owned(),
         expected_core_exists: expected_core_path.exists(),
         service_path: service_path.to_string_lossy().into_owned(),

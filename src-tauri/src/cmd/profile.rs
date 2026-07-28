@@ -6,8 +6,8 @@ use crate::{
     config::{
         Config, IProfiles, PrfItem, PrfOption,
         profiles::{
-            profiles_append_item_with_filedata_safe, profiles_delete_item_safe, profiles_patch_item_safe,
-            profiles_reorder_safe, profiles_save_file_safe,
+            profiles_delete_item_safe, profiles_patch_item_safe, profiles_reorder_safe,
+            profiles_save_file_safe,
         },
         profiles_append_item_safe,
     },
@@ -84,11 +84,13 @@ pub async fn import_profile(url: std::string::String, option: Option<PrfOption>)
 
     match profiles_append_item_safe(item).await {
         Ok(_) => match profiles_save_file_safe().await {
-            Ok(_) => {
-                logging!(info, Type::Cmd, "[导入订阅] 配置文件保存成功");
-            }
+            Ok(_) => logging!(info, Type::Cmd, "[导入订阅] 配置文件保存成功"),
             Err(e) => {
                 logging!(error, Type::Cmd, "[导入订阅] 保存配置文件失败: {}", e);
+                if let Some(uid) = &item.uid {
+                    let _ = profiles_delete_item_safe(uid).await;
+                }
+                return Err(format!("导入订阅失败: 无法保存配置索引: {e}").into());
             }
         },
         Err(e) => {
@@ -125,21 +127,25 @@ pub async fn reorder_profile(active_id: String, over_id: String) -> CmdResult {
 /// 创建一个新的配置文件
 #[tauri::command]
 pub async fn create_profile(item: PrfItem, file_data: Option<String>) -> CmdResult {
-    match profiles_append_item_with_filedata_safe(&item, file_data).await {
-        Ok(_) => {
-            profiles_save_file_safe().await.stringify_err()?;
-            // 发送配置变更通知
-            if let Some(uid) = &item.uid {
-                logging!(info, Type::Cmd, "[创建订阅] 发送配置变更通知: {}", uid);
-                handle::Handle::notify_profile_changed(uid);
-            }
-            Ok(())
+    let mut prepared = PrfItem::from(&item, file_data)
+        .await
+        .map_err(|err| match err.to_string().as_str() {
+            "the file already exists" => String::from("the file already exists"),
+            _ => format!("add profile error: {err}").into(),
+        })?;
+    profiles_append_item_safe(&mut prepared).await.stringify_err()?;
+    if let Err(err) = profiles_save_file_safe().await {
+        if let Some(uid) = &prepared.uid {
+            let _ = profiles_delete_item_safe(uid).await;
         }
-        Err(err) => match err.to_string().as_str() {
-            "the file already exists" => Err("the file already exists".into()),
-            _ => Err(format!("add profile error: {err}").into()),
-        },
+        return Err(format!("add profile error: 无法保存配置索引: {err}").into());
     }
+
+    if let Some(uid) = &prepared.uid {
+        logging!(info, Type::Cmd, "[创建订阅] 发送配置变更通知: {}", uid);
+        handle::Handle::notify_profile_changed(uid);
+    }
+    Ok(())
 }
 
 /// 更新配置文件
@@ -201,17 +207,51 @@ async fn restore_previous_profile(prev_profile: &String) -> CmdResult<()> {
         .await
         .edit_draft(|d| d.patch_config(&restore_profiles));
     Config::profiles().await.apply();
-    crate::process::AsyncHandler::spawn(|| async move {
-        if let Err(e) = profiles_save_file_safe().await {
-            logging!(warn, Type::Cmd, "Warning: 异步保存恢复配置文件失败: {e}");
-        }
-    });
+    profiles_save_file_safe().await.stringify_err()?;
     logging!(info, Type::Cmd, "成功恢复到之前的配置");
     Ok(())
 }
 
-async fn handle_success(current_value: Option<&String>) -> CmdResult<ValidationOutcome> {
-    Config::profiles().await.apply();
+async fn handle_success(
+    current_value: Option<&String>,
+    previous_profile: Option<&String>,
+) -> CmdResult<ValidationOutcome> {
+    let profiles = Config::profiles().await;
+    if let Err(save_error) = profiles.latest_arc().save_file().await {
+        profiles.discard();
+        let index_rollback = profiles_save_file_safe()
+            .await
+            .map(|_| "旧订阅索引已恢复".to_owned())
+            .unwrap_or_else(|error| format!("旧订阅索引恢复失败: {error}"));
+        let rollback_result = CoreManager::global().update_config_forced().await;
+        let rollback_detail = match rollback_result {
+            Ok(outcome) if outcome.is_valid() => {
+                handle::Handle::refresh_clash();
+                "旧配置运行时已恢复".to_owned()
+            }
+            Ok(outcome) => format!("旧配置运行时恢复失败: {outcome}"),
+            Err(error) => format!("旧配置运行时恢复失败: {error}"),
+        };
+        if let Some(previous) = previous_profile {
+            logging!(
+                error,
+                Type::Cmd,
+                "切换到 {:?} 后保存索引失败，恢复到 {}: {}; {}; {}",
+                current_value,
+                previous,
+                save_error,
+                index_rollback,
+                rollback_detail
+            );
+        }
+        return Err(
+            format!(
+                "配置已验证但无法保存订阅索引: {save_error}; {index_rollback}; {rollback_detail}"
+            )
+            .into(),
+        );
+    }
+    profiles.apply();
     handle::Handle::refresh_clash();
 
     if let Err(e) = Tray::global().update_tooltip().await {
@@ -220,10 +260,6 @@ async fn handle_success(current_value: Option<&String>) -> CmdResult<ValidationO
 
     if let Err(e) = Tray::global().update_menu().await {
         logging!(warn, Type::Cmd, "Warning: 异步更新托盘菜单失败: {e}");
-    }
-
-    if let Err(e) = profiles_save_file_safe().await {
-        logging!(warn, Type::Cmd, "Warning: 异步保存配置文件失败: {e}");
     }
 
     if let Some(current) = current_value
@@ -284,7 +320,7 @@ async fn perform_config_update(
         tokio::time::timeout(Duration::from_secs(30), CoreManager::global().update_config_forced()).await;
 
     match update_result {
-        Ok(Ok(outcome)) if outcome.is_valid() => handle_success(current_value).await,
+        Ok(Ok(outcome)) if outcome.is_valid() => handle_success(current_value, current_profile).await,
         Ok(Ok(outcome)) => handle_validation_failure(outcome, current_profile).await,
         Ok(Err(e)) => handle_update_error(e, current_profile).await,
         Err(_) => handle_timeout(current_profile).await,

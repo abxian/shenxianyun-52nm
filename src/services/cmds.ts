@@ -13,17 +13,27 @@ export async function getProfiles() {
   return invoke<IProfilesConfig>('get_profiles')
 }
 
+async function invokeValidationWithBusyRetry(
+  command: string,
+  args?: Record<string, unknown>,
+) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const outcome = await invoke<ValidationOutcome>(command, args)
+    if (outcome.status === 'valid') return true
+    if (outcome.status !== 'busy') return false
+    await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
+  }
+  return false
+}
+
 export async function enhanceProfiles() {
-  return (
-    (await invoke<ValidationOutcome>('enhance_profiles')).status === 'valid'
-  )
+  return invokeValidationWithBusyRetry('enhance_profiles')
 }
 
 export async function patchProfilesConfig(profiles: IProfilesConfig) {
-  return (
-    (await invoke<ValidationOutcome>('patch_profiles_config', { profiles }))
-      .status === 'valid'
-  )
+  return invokeValidationWithBusyRetry('patch_profiles_config', {
+    profiles,
+  })
 }
 
 export async function createProfile(
@@ -42,14 +52,10 @@ export async function readProfileFile(index: string) {
 }
 
 export async function saveProfileFile(index: string, fileData: string) {
-  return (
-    (
-      await invoke<ValidationOutcome>('save_profile_file', {
-        index,
-        fileData,
-      })
-    ).status === 'valid'
-  )
+  return invokeValidationWithBusyRetry('save_profile_file', {
+    index,
+    fileData,
+  })
 }
 
 export async function importProfile(url: string, option?: IProfileOption) {

@@ -257,6 +257,12 @@ type ValidVerifyResponse = VerifyResponse & {
   subscription_url: string
 }
 
+type ManagedInstallTransaction = {
+  data: ValidVerifyResponse
+  commit: () => Promise<void>
+  rollback: () => Promise<void>
+}
+
 type UpdateStateResponse = {
   ok?: boolean
   update_version?: number
@@ -388,6 +394,12 @@ class AccessCodeStateError extends Error {
   }
 }
 
+class ManagedInstallError extends Error {
+  constructor(message: string) {
+    super(message)
+  }
+}
+
 const parseExpireTime = (value: string) => {
   if (!value) return Number.POSITIVE_INFINITY
   const time = Date.parse(value.replace(' ', 'T'))
@@ -474,7 +486,11 @@ const restoreRuleSnapshot = async (
   }
   if (snapshot.subRules !== undefined) data['sub-rules'] = snapshot.subRules
 
-  await saveProfileFile(profileUid, yaml.dump(data, { lineWidth: -1 }))
+  const saved = await saveProfileFile(
+    profileUid,
+    yaml.dump(data, { lineWidth: -1 }),
+  )
+  if (!saved) throw new Error('规则恢复后的配置验证失败')
 }
 
 const DOMESTIC_API_DIRECT_RULE = `DOMAIN,${DOMESTIC_API_HOST},DIRECT`
@@ -498,8 +514,10 @@ const ensureDomesticApiDirect = async () => {
     DOMESTIC_API_DIRECT_RULE,
     ...prepend.filter((rule) => rule !== DOMESTIC_API_DIRECT_RULE),
   ]
-  await saveProfileFile('Merge', yaml.dump(data, { lineWidth: -1 }))
-  await enhanceProfiles()
+  if (!(await saveProfileFile('Merge', yaml.dump(data, { lineWidth: -1 })))) {
+    throw new Error('国内 API 直连规则验证失败')
+  }
+  if (!(await enhanceProfiles())) throw new Error('国内 API 直连规则应用失败')
 }
 
 const normalizeRuleDomain = (input: string) => {
@@ -622,6 +640,12 @@ const HomePage = () => {
   }, [runtimeBrand])
   const [savedCode, setSavedCode] = useState(
     () => localStorage.getItem(CODE_STORAGE_KEY) || '',
+  )
+  const [codeProfileUid, setCodeProfileUid] = useState(
+    () => localStorage.getItem(CODE_PROFILE_UID_KEY) || '',
+  )
+  const [expiredProfileUid, setExpiredProfileUid] = useState(
+    () => localStorage.getItem(EXPIRED_PROFILE_UID_KEY) || '',
   )
   const [expiresAt, setExpiresAt] = useState(
     () => localStorage.getItem(CODE_EXPIRES_STORAGE_KEY) || '',
@@ -777,7 +801,12 @@ const HomePage = () => {
         ? { label: '系统代理异常', color: 'warning', variant: 'filled' }
         : { label: '系统代理关闭', color: 'default', variant: 'outlined' }
   const activeProfileName = current?.name || profiles?.current || '未导入订阅'
-  const currentCode = savedCode
+  const currentCode =
+    savedCode &&
+    current?.uid &&
+    (current.uid === codeProfileUid || current.uid === expiredProfileUid)
+      ? savedCode
+      : ''
   const isSwitchingCode = Boolean(
     savedCode && code.trim() && code.trim() !== savedCode,
   )
@@ -972,35 +1001,114 @@ const HomePage = () => {
       input: string,
       exchange: Awaited<ReturnType<typeof exchangeImportTicket>>,
       apiBase: string,
-    ) => {
+    ): Promise<ManagedInstallTransaction> => {
       const content = await fetchManagedSubscription({
         subscriptionUrl: exchange.subscription_url,
         deviceToken: exchange.device_token,
       })
+      const previousProfiles = await getProfiles()
+      const previousProfileIds = new Set(
+        (previousProfiles.items || [])
+          .map((item) => item.uid)
+          .filter((uid): uid is string => Boolean(uid)),
+      )
+      const previousCurrentUid = previousProfiles.current || ''
       const prevCodeProfileUid =
         localStorage.getItem(CODE_PROFILE_UID_KEY) || ''
-      await createProfile(
-        {
-          type: 'local',
-          name: input,
-          desc: '受保护的提取码订阅；地址仅由客户端安全保存',
-          url: '',
-          option: {
-            with_proxy: false,
-            self_proxy: false,
-            allow_auto_update: false,
-          },
-        } as IProfileItem,
-        content,
+      const previousAuth =
+        managedAuthRef.current ?? (await loadManagedAuth().catch(() => null))
+      const previousSavedCode = savedCode
+      const previousExpiresAt = expiresAt
+      const storageKeys = [
+        CODE_PROFILE_UID_KEY,
+        CODE_STORAGE_KEY,
+        CODE_EXPIRES_STORAGE_KEY,
+        CODE_UPDATE_VERSION_STORAGE_KEY,
+      ]
+      const previousStorage = new Map(
+        storageKeys.map((key) => [key, localStorage.getItem(key)]),
       )
-      const list = await getProfiles()
-      const newest = list.items?.at(-1)
-      if (!newest?.uid) throw new Error('无法定位新导入的订阅')
+      let newestUid = ''
+      let settled = false
+
+      const restoreStorage = () => {
+        for (const [key, value] of previousStorage) {
+          if (value === null) localStorage.removeItem(key)
+          else localStorage.setItem(key, value)
+        }
+      }
+
+      const restorePrevious = async () => {
+        let restoreError: unknown
+        if (previousCurrentUid) {
+          try {
+            const restored = await patchProfilesConfig({
+              current: previousCurrentUid,
+            })
+            if (!restored) throw new Error('旧订阅运行时配置恢复失败')
+          } catch (error) {
+            restoreError = error
+          }
+        }
+        if (newestUid && (!previousCurrentUid || !restoreError)) {
+          try {
+            await deleteProfile(newestUid)
+          } catch (error) {
+            restoreError ??= error
+          }
+        }
+        try {
+          await persistManagedAuth(previousAuth)
+        } catch (error) {
+          restoreError ??= error
+        }
+        restoreStorage()
+        setSavedCode(previousSavedCode)
+        setExpiresAt(previousExpiresAt)
+        setCodeProfileUid(previousStorage.get(CODE_PROFILE_UID_KEY) || '')
+        await mutateProfiles()
+        await refreshAll()
+        if (restoreError) {
+          throw new Error(
+            `旧订阅自动恢复未完成：${
+              restoreError instanceof Error
+                ? restoreError.message
+                : String(restoreError)
+            }`,
+          )
+        }
+      }
 
       try {
+        await createProfile(
+          {
+            type: 'local',
+            name: input,
+            desc: '受保护的提取码订阅；地址仅由客户端安全保存',
+            url: '',
+            option: {
+              with_proxy: false,
+              self_proxy: false,
+              allow_auto_update: false,
+            },
+          } as IProfileItem,
+          content,
+        )
+        const list = await getProfiles()
+        const newest = (list.items || [])
+          .filter((item) => item.uid && !previousProfileIds.has(item.uid))
+          .at(-1)
+        if (!newest?.uid) throw new Error('无法定位新导入的订阅')
+        newestUid = newest.uid
+
+        const switched = await patchProfilesConfig({ current: newestUid })
+        if (!switched) {
+          throw new Error('新订阅配置验证失败，已保留原订阅')
+        }
+
         const auth: ManagedAuth = {
           accessCode: input,
-          profileUid: newest.uid,
+          profileUid: newestUid,
           apiBase,
           subscriptionUrl: exchange.subscription_url,
           deviceToken: exchange.device_token,
@@ -1010,38 +1118,74 @@ const HomePage = () => {
           detached: false,
           updateVersion: 0,
         }
-        await persistManagedAuth(auth)
-        if (prevCodeProfileUid && prevCodeProfileUid !== newest.uid) {
-          await deleteProfile(prevCodeProfileUid).catch(() => undefined)
-        }
-        localStorage.setItem(CODE_PROFILE_UID_KEY, newest.uid)
-        localStorage.setItem(CODE_STORAGE_KEY, input)
-        localStorage.setItem(
-          CODE_EXPIRES_STORAGE_KEY,
-          exchange.expires_at || '',
-        )
-        localStorage.setItem(
-          CODE_UPDATE_VERSION_STORAGE_KEY,
-          String(auth.updateVersion),
-        )
-        const profilesConfig = await getProfiles()
-        await patchProfilesConfig({ ...profilesConfig, current: newest.uid })
-        await ensureDomesticApiDirect().catch(() => undefined)
-        setSavedCode(input)
-        setExpiresAt(exchange.expires_at || '')
         await mutateProfiles()
         await refreshAll()
+
         return {
-          expires_at: exchange.expires_at || '',
-          update_version: auth.updateVersion,
-          subscription_url: '',
-        } satisfies ValidVerifyResponse
+          data: {
+            expires_at: exchange.expires_at || '',
+            update_version: auth.updateVersion,
+            subscription_url: '',
+          },
+          commit: async () => {
+            if (settled) return
+            await persistManagedAuth(auth)
+            localStorage.setItem(CODE_PROFILE_UID_KEY, newestUid)
+            localStorage.setItem(CODE_STORAGE_KEY, input)
+            localStorage.setItem(
+              CODE_EXPIRES_STORAGE_KEY,
+              exchange.expires_at || '',
+            )
+            localStorage.setItem(
+              CODE_UPDATE_VERSION_STORAGE_KEY,
+              String(auth.updateVersion),
+            )
+            await ensureDomesticApiDirect().catch(() => undefined)
+            setSavedCode(input)
+            setExpiresAt(exchange.expires_at || '')
+            setCodeProfileUid(newestUid)
+            await mutateProfiles()
+            await refreshAll()
+            settled = true
+            if (prevCodeProfileUid && prevCodeProfileUid !== newestUid) {
+              await deleteProfile(prevCodeProfileUid).catch(() => undefined)
+              await mutateProfiles().catch(() => undefined)
+              await refreshAll().catch(() => undefined)
+            }
+          },
+          rollback: async () => {
+            if (settled) return
+            await restorePrevious()
+            settled = true
+          },
+        }
       } catch (error) {
-        await deleteProfile(newest.uid).catch(() => undefined)
-        throw error
+        let rollbackError: unknown
+        try {
+          await restorePrevious()
+        } catch (restoreError) {
+          rollbackError = restoreError
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        throw new ManagedInstallError(
+          rollbackError
+            ? `${message}；${
+                rollbackError instanceof Error
+                  ? rollbackError.message
+                  : String(rollbackError)
+              }`
+            : message,
+        )
       }
     },
-    [fetchManagedSubscription, mutateProfiles, persistManagedAuth, refreshAll],
+    [
+      expiresAt,
+      fetchManagedSubscription,
+      mutateProfiles,
+      persistManagedAuth,
+      refreshAll,
+      savedCode,
+    ],
   )
 
   useEffect(() => {
@@ -1155,9 +1299,23 @@ const HomePage = () => {
     const profileUid = current?.uid
     if (!profileUid) return
 
+    const previousContent = await readProfileFile(profileUid)
     const ruleSnapshot = await readRuleSnapshot(profileUid)
-    await updateProfile(profileUid, { with_proxy: true })
-    await restoreRuleSnapshot(profileUid, ruleSnapshot)
+    try {
+      await updateProfile(profileUid, { with_proxy: true })
+      await restoreRuleSnapshot(profileUid, ruleSnapshot)
+    } catch (error) {
+      const restored = await saveProfileFile(profileUid, previousContent).catch(
+        () => false,
+      )
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        restored
+          ? `${message}；已恢复更新前订阅`
+          : `${message}；更新前订阅也未能自动恢复`,
+        { cause: error },
+      )
+    }
   }, [current?.uid])
 
   const updateManagedProfile = useCallback(
@@ -1186,15 +1344,30 @@ const HomePage = () => {
 
       const snapshot = await readRuleSnapshot(auth.profileUid)
       const content = await fetchManagedSubscription(auth)
-      await saveProfileFile(auth.profileUid, content)
-      await restoreRuleSnapshot(auth.profileUid, snapshot)
-      const savedContent = await readProfileFile(auth.profileUid)
-      await persistManagedAuth({
-        ...auth,
-        contentHash: await hashManagedContent(savedContent),
-        detached: false,
-        updateVersion: remoteVersion,
-      })
+      const saved = await saveProfileFile(auth.profileUid, content)
+      if (!saved) throw new Error('远程订阅内容验证失败，已保留原配置')
+      try {
+        await restoreRuleSnapshot(auth.profileUid, snapshot)
+        const savedContent = await readProfileFile(auth.profileUid)
+        await persistManagedAuth({
+          ...auth,
+          contentHash: await hashManagedContent(savedContent),
+          detached: false,
+          updateVersion: remoteVersion,
+        })
+      } catch (error) {
+        const restored = await saveProfileFile(
+          auth.profileUid,
+          localContent,
+        ).catch(() => false)
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(
+          restored
+            ? `${message}；已恢复更新前订阅`
+            : `${message}；更新前订阅也未能自动恢复`,
+          { cause: error },
+        )
+      }
       return true
     },
     [current?.uid, fetchManagedSubscription, persistManagedAuth, setStatus],
@@ -1213,7 +1386,7 @@ const HomePage = () => {
 
   const sendClientPresence = useCallback(
     async (online: boolean) => {
-      const value = savedCode
+      const value = currentCode
       if (!value) return
       const auth = managedAuthRef.current
       if (auth?.accessCode === value) {
@@ -1289,11 +1462,11 @@ const HomePage = () => {
         )
       }
     },
-    [apiFetch, savedCode, stopForServerLimit],
+    [apiFetch, currentCode, stopForServerLimit],
   )
 
   const reportClientTraffic = useCallback(async () => {
-    const value = savedCode
+    const value = currentCode
     if (!value || !running) return
 
     const current = trafficTotalsRef.current
@@ -1420,7 +1593,7 @@ const HomePage = () => {
     }
     // 只有服务端明确确认成功才推进基线，失败增量留到下一轮重试。
     lastReportedTrafficRef.current = current
-  }, [apiFetch, running, savedCode, stopForServerLimit])
+  }, [apiFetch, currentCode, running, stopForServerLimit])
 
   const activateCode = async (
     value: string,
@@ -1439,19 +1612,16 @@ const HomePage = () => {
           name: value,
         })
 
-        // 切换到不同提取码时，先停代理再切换；同一提取码重新导入则无需停。
-        if (savedCode && savedCode !== value && running) {
-          await stopCore().catch(() => {})
-          if (tunOn) await patchVerge({ enable_tun_mode: false })
-          if (systemProxyOn || systemProxyConfigOn) {
-            await toggleSystemProxy(false)
-          }
-        }
-
         onPhase?.('downloading')
         return await installManagedSubscription(value, exchange, apiBase)
       } catch (error) {
         lastError = error
+        if (
+          (error instanceof AccessCodeStateError && error.serverRejected) ||
+          error instanceof ManagedInstallError
+        ) {
+          break
+        }
         if (attempt < retryCount) {
           // 重试前尝试切换到下一条可用 API 线路（当前线路可能已失联）。
           await rotateApiBase(proxyUrlRef.current || undefined).catch(
@@ -1485,11 +1655,14 @@ const HomePage = () => {
       )
       const refreshed = await getProfiles()
       targetUid = refreshed.items?.at(-1)?.uid
-      if (targetUid) localStorage.setItem(EXPIRED_PROFILE_UID_KEY, targetUid)
+      if (targetUid) {
+        localStorage.setItem(EXPIRED_PROFILE_UID_KEY, targetUid)
+        setExpiredProfileUid(targetUid)
+      }
     }
     if (targetUid) {
-      const latest = await getProfiles()
-      await patchProfilesConfig({ ...latest, current: targetUid })
+      const switched = await patchProfilesConfig({ current: targetUid })
+      if (!switched) throw new Error('到期提示配置验证失败')
       await mutateProfiles()
       await refreshAll()
     }
@@ -1513,9 +1686,21 @@ const HomePage = () => {
       apiBase,
       name: value,
     })
-    await installManagedSubscription(value, exchange, apiBase)
-    if (expiredUid) await deleteProfile(expiredUid).catch(() => undefined)
-    localStorage.removeItem(EXPIRED_PROFILE_UID_KEY)
+    const transaction = await installManagedSubscription(
+      value,
+      exchange,
+      apiBase,
+    )
+    await transaction.commit()
+    if (expiredUid) {
+      try {
+        await deleteProfile(expiredUid)
+        localStorage.removeItem(EXPIRED_PROFILE_UID_KEY)
+        setExpiredProfileUid('')
+      } catch {
+        // 保留 UID 继续隐藏占位配置，下次恢复或手动删除时再清理。
+      }
+    }
     await mutateProfiles()
     await refreshAll()
     return true
@@ -1538,12 +1723,15 @@ const HomePage = () => {
   // 只做绑定不解绑（避免影响到期占位配置的续费恢复）；外部/本地配置 url 不匹配 → 不绑定 → 不受限。
   useEffect(() => {
     const code = extractCodeFromProfileUrl(current?.url || '')
-    if (code && code !== savedCode) {
+    const boundUid = localStorage.getItem(CODE_PROFILE_UID_KEY) || ''
+    if (code && (code !== savedCode || current?.uid !== boundUid)) {
       localStorage.setItem(CODE_STORAGE_KEY, code)
       if (current?.uid) localStorage.setItem(CODE_PROFILE_UID_KEY, current.uid)
       // 官网一键导入需要把 URL 中的提取码同步到组件状态。
       // eslint-disable-next-line @eslint-react/set-state-in-effect
       setSavedCode(code)
+      // eslint-disable-next-line @eslint-react/set-state-in-effect
+      setCodeProfileUid(current?.uid || '')
     }
   }, [current?.uid, current?.url, savedCode])
 
@@ -1591,6 +1779,7 @@ const HomePage = () => {
         )
         setSavedCode(value)
         setExpiresAt(data.expires_at || '')
+        setCodeProfileUid(current.uid)
         await mutateProfiles()
         await refreshAll()
         setStatus('旧版订阅已迁移并更新')
@@ -1654,7 +1843,7 @@ const HomePage = () => {
   }, [checkDesktopUpdate])
 
   useEffect(() => {
-    if (!running || !savedCode) return
+    if (!running || !currentCode) return
     sendClientPresence(true).catch(() => undefined)
     const timer = window.setInterval(() => {
       sendClientPresence(true).catch(() => undefined)
@@ -1663,7 +1852,7 @@ const HomePage = () => {
       window.clearInterval(timer)
       sendClientPresence(false).catch(() => undefined)
     }
-  }, [running, savedCode, sendClientPresence])
+  }, [currentCode, running, sendClientPresence])
 
   useEffect(() => {
     trafficTotalsRef.current = {
@@ -1676,7 +1865,7 @@ const HomePage = () => {
   ])
 
   useEffect(() => {
-    if (!running || !savedCode) {
+    if (!running || !currentCode) {
       lastReportedTrafficRef.current = trafficTotalsRef.current
       trafficCounterRef.current = {
         id: crypto.randomUUID?.() || `traffic-${Date.now().toString(36)}`,
@@ -1704,12 +1893,12 @@ const HomePage = () => {
       window.clearInterval(timer)
       reportClientTraffic().catch(() => undefined)
     }
-  }, [reportClientTraffic, running, savedCode])
+  }, [currentCode, reportClientTraffic, running])
 
   // 订阅更新轮询：只在「已连接 && 有提取码」时运行，避免空闲时持续打服务器。
   // 单次请求加在途互斥；失败时指数退避并叠加随机抖动，防止 web 掉线恢复后所有客户端同时冲击。
   useEffect(() => {
-    if (!running || !savedCode) return
+    if (!running || !currentCode) return
 
     let cancelled = false
     let timer: number | undefined
@@ -1734,7 +1923,7 @@ const HomePage = () => {
       }
 
       try {
-        const state = await updateState(savedCode)
+        const state = await updateState(currentCode)
         const remoteVersion = Number(state.update_version || 0)
         const localVersion = Number(
           localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
@@ -1816,7 +2005,7 @@ const HomePage = () => {
     recoverFromExpired,
     refreshAll,
     running,
-    savedCode,
+    currentCode,
     updateCurrentProfileKeepingRules,
     updateManagedProfile,
     updateState,
@@ -1853,14 +2042,13 @@ const HomePage = () => {
   // 只展示用户真正的配置文件（远程订阅 / 本地配置），隐藏到期占位配置、全局 Merge
   // 覆盖、脚本等「乱七八糟」的内部条目，避免误编辑/误切换。
   const profileList = useMemo(() => {
-    const expiredUid = localStorage.getItem(EXPIRED_PROFILE_UID_KEY) || ''
     return (profiles?.items || []).filter(
       (item) =>
         (item.type === 'remote' || item.type === 'local') &&
-        item.uid !== expiredUid &&
+        item.uid !== expiredProfileUid &&
         item.uid !== rulesProfileUid,
     )
-  }, [profiles?.items])
+  }, [expiredProfileUid, profiles?.items])
 
   const manualImportByUrl = useLockFn(async () => {
     const url = manualImportUrl.trim()
@@ -1871,13 +2059,27 @@ const HomePage = () => {
     setManualBusy(true)
     setStatus('正在导入订阅...')
     try {
+      const before = await getProfiles()
+      const previousIds = new Set(
+        (before.items || [])
+          .map((item) => item.uid)
+          .filter((uid): uid is string => Boolean(uid)),
+      )
       // 不开启周期性自动更新，避免无谓重下整个配置。
       await importProfile(url, { with_proxy: true, allow_auto_update: false })
       await ensureDomesticApiDirect().catch(() => undefined)
       const list = await getProfiles()
-      const newest = list.items?.at(-1)
+      const newest = (list.items || [])
+        .filter((item) => item.uid && !previousIds.has(item.uid))
+        .at(-1)
       if (newest?.uid) {
-        await patchProfilesConfig({ ...list, current: newest.uid })
+        const switched = await patchProfilesConfig({ current: newest.uid })
+        if (!switched) {
+          await deleteProfile(newest.uid).catch(() => undefined)
+          throw new Error('订阅内容验证失败，已保留原配置')
+        }
+      } else {
+        throw new Error('无法定位新导入的订阅')
       }
       setManualImportUrl('')
       await mutateProfiles()
@@ -1917,8 +2119,8 @@ const HomePage = () => {
   const manualSwitch = useLockFn(async (uid: string) => {
     setManualBusy(true)
     try {
-      const list = await getProfiles()
-      await patchProfilesConfig({ ...list, current: uid })
+      const switched = await patchProfilesConfig({ current: uid })
+      if (!switched) throw new Error('配置验证失败，仍使用原配置')
       await mutateProfiles()
       await refreshAll()
       setStatus('已切换配置文件')
@@ -1935,9 +2137,16 @@ const HomePage = () => {
       await deleteProfile(uid)
       if (localStorage.getItem(EXPIRED_PROFILE_UID_KEY) === uid) {
         localStorage.removeItem(EXPIRED_PROFILE_UID_KEY)
+        setExpiredProfileUid('')
       }
       if (localStorage.getItem(CODE_PROFILE_UID_KEY) === uid) {
         localStorage.removeItem(CODE_PROFILE_UID_KEY)
+        localStorage.removeItem(CODE_STORAGE_KEY)
+        localStorage.removeItem(CODE_EXPIRES_STORAGE_KEY)
+        localStorage.removeItem(CODE_UPDATE_VERSION_STORAGE_KEY)
+        setSavedCode('')
+        setExpiresAt('')
+        setCodeProfileUid('')
       }
       if (managedAuthRef.current?.profileUid === uid) {
         await persistManagedAuth(null)
@@ -1964,7 +2173,8 @@ const HomePage = () => {
   const manualSaveEdit = useLockFn(async () => {
     if (!editorState) return
     try {
-      await saveProfileFile(editorState.uid, editorState.value)
+      const saved = await saveProfileFile(editorState.uid, editorState.value)
+      if (!saved) throw new Error('配置验证失败，已恢复保存前内容')
       const auth = managedAuthRef.current
       if (auth?.profileUid === editorState.uid) {
         await persistManagedAuth({
@@ -1985,6 +2195,19 @@ const HomePage = () => {
       setStatus(error instanceof Error ? error.message : String(error))
     }
   })
+
+  const waitForCoreReady = useCallback(async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        const version = await getVersion()
+        if (version?.version) return true
+      } catch {
+        // 核心刚启动时控制器会短暂不可用，继续等待。
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200 + attempt * 100))
+    }
+    return false
+  }, [])
 
   const togglePower = useLockFn(async () => {
     setBusy(true)
@@ -2053,6 +2276,12 @@ const HomePage = () => {
         await toggleSystemProxy(false).catch(() => {})
       }
       await startCore().catch(() => restartCore())
+      if (!(await waitForCoreReady())) {
+        await restartCore()
+        if (!(await waitForCoreReady())) {
+          throw new Error('核心控制器没有启动，请运行一键自检查看服务路径')
+        }
+      }
       await mutateSystemState()
 
       if (tunOn) await patchVerge({ enable_tun_mode: false })
@@ -2070,8 +2299,18 @@ const HomePage = () => {
       await invalidateProxyState()
       await refreshAll()
       sendClientPresence(true).catch(() => undefined)
-    } catch {
-      setStatus('操作失败，请重启软件或在高级设置中运行自检')
+    } catch (error) {
+      if (!running) {
+        await patchVerge({ enable_tun_mode: false }).catch(() => undefined)
+        await toggleSystemProxy(false).catch(() => undefined)
+        await stopCore().catch(() => undefined)
+        await invalidateProxyState().catch(() => undefined)
+      }
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : '操作失败，请重启软件或在高级设置中运行自检',
+      )
     } finally {
       setBusy(false)
     }
@@ -2221,6 +2460,12 @@ const HomePage = () => {
 
     if (proxyStateMismatch) await toggleSystemProxy(false).catch(() => {})
     await startCore().catch(() => restartCore())
+    if (!(await waitForCoreReady())) {
+      await restartCore()
+      if (!(await waitForCoreReady())) {
+        throw new Error('订阅已导入，但核心控制器启动失败')
+      }
+    }
     await mutateSystemState()
 
     const useTun =
@@ -2259,12 +2504,59 @@ const HomePage = () => {
         '订阅已导入，但代理联网检查失败；已关闭代理以恢复本机网络',
       )
     }
+  }
 
-    await sendClientPresence(true).catch(() => undefined)
+  const restoreConnectivityAfterImportFailure = async (snapshot: {
+    wasRunning: boolean
+    tunEnabled: boolean
+    systemProxyEnabled: boolean
+  }) => {
+    if (!snapshot.wasRunning) return
+
+    await startCore().catch(() => restartCore())
+    if (!(await waitForCoreReady())) {
+      await restartCore()
+      if (!(await waitForCoreReady())) {
+        throw new Error('旧配置已恢复，但核心控制器未能重新启动')
+      }
+    }
+    await mutateSystemState()
+    await patchVerge({ enable_tun_mode: snapshot.tunEnabled })
+    await toggleSystemProxy(snapshot.systemProxyEnabled)
+    await invalidateProxyState()
+    await refreshAll()
+  }
+
+  const rollbackManagedImport = async (
+    transaction: ManagedInstallTransaction,
+    connectivity: {
+      wasRunning: boolean
+      tunEnabled: boolean
+      systemProxyEnabled: boolean
+    },
+  ) => {
+    const failures: string[] = []
+    try {
+      await transaction.rollback()
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+    try {
+      await restoreConnectivityAfterImportFailure(connectivity)
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+    return failures.join('；')
   }
 
   const importManagedRequest = useLockFn(
     async (request: ManagedImportRequest) => {
+      const connectivity = {
+        wasRunning: running,
+        tunEnabled: tunOn,
+        systemProxyEnabled: systemProxyOn || systemProxyConfigOn,
+      }
+      let transaction: ManagedInstallTransaction | null = null
       setCodeDialogOpen(true)
       setCodeImportMessage('')
       setCodeImportPhase('checking')
@@ -2274,26 +2566,38 @@ const HomePage = () => {
         const value = (exchange.name || request.name || '').trim()
         if (!value) throw new Error('安全导入未返回提取码')
         setCodeImportPhase('downloading')
-        const data = await installManagedSubscription(
+        transaction = await installManagedSubscription(
           value,
           exchange,
           request.apiBase,
         )
         setCodeImportPhase('starting')
         await startImportedProfile()
+        await transaction.commit()
         setCodeImportPhase('success')
         setCodeImportMessage(
           `订阅已安全导入，网络连接正常${
-            data.expires_at ? `，到期 ${data.expires_at}` : ''
+            transaction.data.expires_at
+              ? `，到期 ${transaction.data.expires_at}`
+              : ''
           }`,
         )
         setStatus('订阅已安全导入，订阅地址不会显示')
       } catch (error) {
+        let recoveryFailure = ''
+        if (transaction) {
+          recoveryFailure = await rollbackManagedImport(
+            transaction,
+            connectivity,
+          )
+        }
         setCodeImportPhase('error')
         setCodeImportMessage(
-          error instanceof Error
-            ? error.message
-            : '安全导入失败，请返回网页重新点击一键导入',
+          recoveryFailure
+            ? `安全导入失败，且自动恢复未完成：${recoveryFailure}`
+            : error instanceof Error
+              ? error.message
+              : '安全导入失败，请返回网页重新点击一键导入',
         )
       } finally {
         setBusy(false)
@@ -2332,32 +2636,53 @@ const HomePage = () => {
     setStatus('')
     setCodeImportMessage('')
     let phase: CodeImportPhase = 'checking'
+    let transaction: ManagedInstallTransaction | null = null
+    const connectivity = {
+      wasRunning: running,
+      tunEnabled: tunOn,
+      systemProxyEnabled: systemProxyOn || systemProxyConfigOn,
+    }
     const updatePhase = (next: CodeImportPhase) => {
       phase = next
       setCodeImportPhase(next)
     }
     updatePhase('checking')
     try {
-      const data = await activateCode(value, 3, updatePhase)
+      transaction = await activateCode(value, 3, updatePhase)
       updatePhase('starting')
       await startImportedProfile()
+      await transaction.commit()
       setCode('')
       updatePhase('success')
       setCodeImportMessage(
         `${isSwitchingCode ? '提取码已切换' : '订阅已导入'}，网络连接正常${
-          data.expires_at ? `，到期 ${data.expires_at}` : ''
+          transaction.data.expires_at
+            ? `，到期 ${transaction.data.expires_at}`
+            : ''
         }`,
       )
       setStatus('订阅已导入，网络连接正常')
-    } catch {
+    } catch (error) {
+      let recoveryFailure = ''
+      if (transaction) {
+        recoveryFailure = await rollbackManagedImport(transaction, connectivity)
+      }
       const failedPhase = phase
       updatePhase('error')
       setCodeImportMessage(
-        failedPhase === 'checking'
-          ? '提取码验证失败，请检查提取码或网络后重试。'
-          : failedPhase === 'downloading'
-            ? '订阅获取失败，请稍后重新检测。'
-            : '订阅已导入，但联网检查失败。可以重新检测、重启软件或彻底重置。',
+        recoveryFailure
+          ? `新订阅未启用，且自动恢复未完成：${recoveryFailure}`
+          : error instanceof ManagedInstallError
+            ? error.message
+            : failedPhase === 'checking'
+              ? '提取码验证失败，请检查提取码或网络后重试。'
+              : failedPhase === 'downloading'
+                ? '订阅获取失败，请稍后重新检测。'
+                : transaction
+                  ? '新订阅联网检查失败，已恢复原订阅和原网络状态。'
+                  : error instanceof Error
+                    ? error.message
+                    : '订阅启动失败，请稍后重试。',
       )
     } finally {
       setBusy(false)
@@ -2729,7 +3054,8 @@ const HomePage = () => {
       )
     }
 
-    if (!savedCode) set('sub', 'fail', '未导入提取码')
+    if (!current?.uid) set('sub', 'fail', '未导入订阅')
+    else if (!currentCode) set('sub', 'ok', '当前为手动或外部配置')
     else if (codeExpired) set('sub', 'fail', '提取码已过期')
     else set('sub', 'ok', expiresAt ? `已绑定，到期 ${expiresAt}` : '已绑定')
 
@@ -2961,6 +3287,30 @@ const HomePage = () => {
       return
     }
     setResetting(true)
+    const previousManagedAuth =
+      managedAuthRef.current ?? (await loadManagedAuth().catch(() => null))
+    const resetStorage = new Map(
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith('shenxianyun.'))
+        .map((key) => [key, localStorage.getItem(key)]),
+    )
+    const resetConnectivity = {
+      wasRunning: running || runningMode !== 'NotRunning',
+      tunEnabled: tunOn,
+      systemProxyEnabled: systemProxyOn || systemProxyConfigOn,
+    }
+    const restoreResetStorage = () => {
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith('shenxianyun.'))
+        .forEach((key) => localStorage.removeItem(key))
+      for (const [key, value] of resetStorage) {
+        if (value !== null) localStorage.setItem(key, value)
+      }
+      setSavedCode(resetStorage.get(CODE_STORAGE_KEY) || '')
+      setExpiresAt(resetStorage.get(CODE_EXPIRES_STORAGE_KEY) || '')
+      setCodeProfileUid(resetStorage.get(CODE_PROFILE_UID_KEY) || '')
+      setExpiredProfileUid(resetStorage.get(EXPIRED_PROFILE_UID_KEY) || '')
+    }
     try {
       const stableClientId = getClientId()
 
@@ -3000,6 +3350,11 @@ const HomePage = () => {
       setStatus('旧配置已清理，正在生成全新配置…')
       await factoryResetApp()
     } catch (error) {
+      restoreResetStorage()
+      await persistManagedAuth(previousManagedAuth).catch(() => undefined)
+      await restoreConnectivityAfterImportFailure(resetConnectivity).catch(
+        () => undefined,
+      )
       setResetting(false)
       setStatus(
         `重置失败：${error instanceof Error ? error.message : String(error)}`,
