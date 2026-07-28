@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn extracts_and_unescapes_task_command() {
-        let xml = r#"<Exec><Command>C:\Program Files\A &amp; B\app.exe</Command></Exec>"#;
+        let xml = r"<Exec><Command>C:\Program Files\A &amp; B\app.exe</Command></Exec>";
         assert_eq!(
             extract_xml_tag(xml, "Command").as_deref(),
             Some(r"C:\Program Files\A & B\app.exe")
