@@ -75,7 +75,8 @@ fn remove_factory_reset_config(app_dir: &Path) -> std::io::Result<usize> {
     ));
     fs::create_dir(&staging_dir)?;
 
-    let mut staged = Vec::with_capacity(targets.len());
+    let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+        Vec::with_capacity(targets.len());
     for source in targets {
         let Some(file_name) = source.file_name() else {
             continue;
