@@ -78,7 +78,7 @@ impl CoreManager {
                         };
                         Logger::global().writer_sidecar_log(Level::Info, &message);
                         CLASH_LOGGER.clear_logs().await;
-                        let manager = CoreManager::global();
+                        let manager = Self::global();
                         if manager.clear_running_child_sidecar(pid) {
                             manager.after_core_process();
                             logging!(
