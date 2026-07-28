@@ -76,10 +76,7 @@ impl CoreManager {
 
         match *self.get_running_mode() {
             RunningMode::Service => self.stop_core_by_service().await,
-            RunningMode::Sidecar => {
-                self.stop_core_by_sidecar();
-                Ok(())
-            }
+            RunningMode::Sidecar => self.stop_core_by_sidecar(),
             RunningMode::NotRunning => Ok(()),
         }
     }

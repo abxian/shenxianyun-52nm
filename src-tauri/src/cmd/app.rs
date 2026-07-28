@@ -187,10 +187,14 @@ pub async fn factory_reset_app() -> CmdResult<()> {
     handle::Handle::global().set_is_exiting();
 
     if !feat::clean_async().await {
+        handle::Handle::global().clear_is_exiting();
         logging!(
-            warn,
+            error,
             Type::System,
-            "重置前部分系统清理未完成，将继续删除客户端配置"
+            "彻底重置已中止：重置前无法完整停止核心或恢复系统网络"
+        );
+        return Err(
+            "重置前无法完整停止核心或恢复系统网络，原配置未删除；请重启电脑后重试".into(),
         );
     }
 

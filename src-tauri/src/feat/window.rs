@@ -103,9 +103,13 @@ pub async fn clean_async() -> bool {
 
         logging!(info, Type::System, "stop core");
         match timeout(stop_timeout, CoreManager::global().stop_core()).await {
-            Ok(_) => {
+            Ok(Ok(())) => {
                 logging!(info, Type::Window, "core已停止");
                 true
+            }
+            Ok(Err(e)) => {
+                logging!(warn, Type::Window, "Warning: 停止core失败: {e}");
+                false
             }
             Err(_) => {
                 logging!(

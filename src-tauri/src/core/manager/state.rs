@@ -98,7 +98,7 @@ impl CoreManager {
         Ok(())
     }
 
-    pub(super) fn stop_core_by_sidecar(&self) {
+    pub(super) fn stop_core_by_sidecar(&self) -> Result<()> {
         logging!(info, Type::Core, "Stopping sidecar");
         defer! {
             self.set_running_mode(RunningMode::NotRunning);
@@ -113,7 +113,9 @@ impl CoreManager {
                 pid,
                 result
             );
+            result?;
         }
+        Ok(())
     }
 
     pub(super) async fn start_core_by_service(&self) -> Result<()> {
