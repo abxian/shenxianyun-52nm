@@ -172,6 +172,7 @@ const buildExpiredProfileYaml = () =>
 const DESKTOP_VERSION = '2.5.32'
 const CLIENT_UA = 'JC116-Shenxianyun-Windows/2.5.32'
 const DESKTOP_PLATFORM = getSystem()
+const LIGHT_SURFACE_TEXT_COLOR = '#182033'
 const fieldSx = {
   '& .MuiInputLabel-root': {
     color: 'rgba(33,43,64,.82)',
@@ -180,12 +181,13 @@ const fieldSx = {
     color: '#5f7bf0',
   },
   '& .MuiInputBase-root': {
-    color: '#182033',
+    color: LIGHT_SURFACE_TEXT_COLOR,
+    colorScheme: 'light',
     bgcolor: 'rgba(255,255,255,.6)',
     borderRadius: '12px',
   },
   '& .MuiInputBase-input': {
-    color: '#182033',
+    color: LIGHT_SURFACE_TEXT_COLOR,
   },
   '& .MuiInputBase-input.Mui-disabled': {
     WebkitTextFillColor: 'rgba(24,32,51,.72)',
@@ -225,6 +227,8 @@ const outlineButtonSx = {
 
 // 所有弹窗/选项页共用的玻璃拟态渐变面板，风格与主界面一致
 const glassDialogPaperSx = {
+  color: LIGHT_SURFACE_TEXT_COLOR,
+  colorScheme: 'light',
   borderRadius: '22px',
   border: '1px solid rgba(255,255,255,.6)',
   background:
@@ -232,6 +236,36 @@ const glassDialogPaperSx = {
   backdropFilter: 'blur(26px)',
   boxShadow:
     '0 26px 64px rgba(90,110,220,.3), inset 0 1px 0 rgba(255,255,255,.85)',
+  '& .MuiTypography-root': {
+    color: LIGHT_SURFACE_TEXT_COLOR,
+  },
+  '& .MuiToggleButton-root:not(.Mui-selected)': {
+    color: '#4356c4',
+  },
+}
+
+const nodeMenuPaperSx = {
+  color: LIGHT_SURFACE_TEXT_COLOR,
+  colorScheme: 'light',
+  borderRadius: '14px',
+  border: '1px solid rgba(255,255,255,.6)',
+  background:
+    'linear-gradient(160deg, rgba(255,255,255,.96), rgba(233,236,252,.94))',
+  backdropFilter: 'blur(22px)',
+  boxShadow: '0 18px 44px rgba(90,110,220,.24)',
+  '& .MuiMenuItem-root': {
+    color: LIGHT_SURFACE_TEXT_COLOR,
+    '&:hover, &.Mui-focusVisible': {
+      bgcolor: 'rgba(95,123,240,.1)',
+    },
+    '&.Mui-selected': {
+      color: LIGHT_SURFACE_TEXT_COLOR,
+      bgcolor: 'rgba(95,123,240,.16)',
+    },
+    '&.Mui-selected:hover, &.Mui-selected.Mui-focusVisible': {
+      bgcolor: 'rgba(95,123,240,.22)',
+    },
+  },
 }
 
 const getClientId = () => {
@@ -3542,6 +3576,8 @@ const HomePage = () => {
         sx={{
           height: '100%',
           minHeight: 0,
+          color: LIGHT_SURFACE_TEXT_COLOR,
+          colorScheme: 'light',
           display: 'flex',
           alignItems: 'flex-start',
           justifyContent: 'center',
@@ -3883,17 +3919,7 @@ const HomePage = () => {
                         MenuProps={{
                           slotProps: {
                             paper: {
-                              sx: {
-                                borderRadius: '14px',
-                                border: '1px solid rgba(255,255,255,.6)',
-                                background:
-                                  'linear-gradient(160deg, rgba(255,255,255,.92), rgba(233,236,252,.88))',
-                                backdropFilter: 'blur(22px)',
-                                boxShadow: '0 18px 44px rgba(90,110,220,.24)',
-                                '& .MuiMenuItem-root.Mui-selected': {
-                                  bgcolor: 'rgba(95,123,240,.16)',
-                                },
-                              },
+                              sx: nodeMenuPaperSx,
                             },
                           },
                         }}
@@ -4094,7 +4120,11 @@ const HomePage = () => {
                       i
                     </Box>
                     <Typography
-                      sx={{ fontSize: 12.5, color: '#33406e', fontWeight: 600 }}
+                      sx={{
+                        fontSize: 12.5,
+                        color: '#33406e',
+                        fontWeight: 600,
+                      }}
                     >
                       测试连通性后，节点名后显示数字(毫秒)即代表该节点连接正常，可放心使用。
                     </Typography>
@@ -4456,7 +4486,11 @@ const HomePage = () => {
                               color={
                                 item.status === '已允许' ? 'success' : 'default'
                               }
-                              sx={{ height: 20, fontSize: 11, fontWeight: 800 }}
+                              sx={{
+                                height: 20,
+                                fontSize: 11,
+                                fontWeight: 800,
+                              }}
                             />
                           )}
                         </Stack>
@@ -5286,7 +5320,11 @@ const HomePage = () => {
                 </Button>
               ) : (
                 <Typography
-                  sx={{ mr: 'auto', fontSize: 12, color: 'rgba(36,46,66,.5)' }}
+                  sx={{
+                    mr: 'auto',
+                    fontSize: 12,
+                    color: 'rgba(36,46,66,.5)',
+                  }}
                 >
                   检测期间请不要关闭软件
                 </Typography>
