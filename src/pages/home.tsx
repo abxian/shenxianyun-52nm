@@ -56,7 +56,12 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { useLockFn } from 'ahooks'
 import yaml from 'js-yaml'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getVersion } from 'tauri-plugin-mihomo-api'
+import {
+  delayGroup,
+  getBaseConfig,
+  getVersion,
+  selectNodeForGroup,
+} from 'tauri-plugin-mihomo-api'
 
 import { BasePage, type DialogRef } from '@/components/base'
 import { WebsiteTestViewer } from '@/components/home/website-test-viewer'
@@ -80,6 +85,7 @@ import { useUpdate } from '@/hooks/use-update'
 import { useVerge } from '@/hooks/use-verge'
 import { useAppData } from '@/providers/app-data-context'
 import {
+  calcuProxies,
   createLocalBackup,
   createProfile,
   enhanceProfiles,
@@ -100,6 +106,7 @@ import {
   saveProfileFile,
   startCore,
   stopCore,
+  syncTrayProxySelection,
   deleteProfile,
   updateProfile,
 } from '@/services/cmds'
@@ -127,6 +134,11 @@ import {
   type ManagedImportRequest,
 } from '@/services/managed-subscription'
 import getSystem from '@/utils/get-system'
+import {
+  ImportNodeHealthError,
+  listImportNodeCandidates,
+  rankHealthyImportNodes,
+} from '@/utils/import-node-health'
 
 const CODE_STORAGE_KEY = 'shenxianyun.accessCode'
 const CODE_EXPIRES_STORAGE_KEY = 'shenxianyun.accessExpiresAt'
@@ -293,6 +305,7 @@ type ValidVerifyResponse = VerifyResponse & {
 
 type ManagedInstallTransaction = {
   data: ValidVerifyResponse
+  activate: () => Promise<void>
   commit: () => Promise<void>
   rollback: () => Promise<void>
 }
@@ -1063,6 +1076,7 @@ const HomePage = () => {
         storageKeys.map((key) => [key, localStorage.getItem(key)]),
       )
       let newestUid = ''
+      let activated = false
       let settled = false
 
       const restoreStorage = () => {
@@ -1101,7 +1115,7 @@ const HomePage = () => {
         setExpiresAt(previousExpiresAt)
         setCodeProfileUid(previousStorage.get(CODE_PROFILE_UID_KEY) || '')
         await mutateProfiles()
-        await refreshAll()
+        await refreshAll().catch(() => undefined)
         if (restoreError) {
           throw new Error(
             `旧订阅自动恢复未完成：${
@@ -1135,11 +1149,6 @@ const HomePage = () => {
         if (!newest?.uid) throw new Error('无法定位新导入的订阅')
         newestUid = newest.uid
 
-        const switched = await patchProfilesConfig({ current: newestUid })
-        if (!switched) {
-          throw new Error('新订阅配置验证失败，已保留原订阅')
-        }
-
         const auth: ManagedAuth = {
           accessCode: input,
           profileUid: newestUid,
@@ -1153,7 +1162,16 @@ const HomePage = () => {
           updateVersion: 0,
         }
         await mutateProfiles()
-        await refreshAll()
+
+        const activate = async () => {
+          if (activated) return
+          const switched = await patchProfilesConfig({ current: newestUid })
+          if (!switched) {
+            throw new Error('新订阅配置验证失败，已保留原订阅')
+          }
+          activated = true
+          await mutateProfiles()
+        }
 
         return {
           data: {
@@ -1161,8 +1179,10 @@ const HomePage = () => {
             update_version: auth.updateVersion,
             subscription_url: '',
           },
+          activate,
           commit: async () => {
             if (settled) return
+            await activate()
             await persistManagedAuth(auth)
             localStorage.setItem(CODE_PROFILE_UID_KEY, newestUid)
             localStorage.setItem(CODE_STORAGE_KEY, input)
@@ -2243,6 +2263,19 @@ const HomePage = () => {
     return false
   }, [])
 
+  const waitForCoreStopped = useCallback(async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        const version = await getVersion()
+        if (!version?.version) return true
+      } catch {
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150 + attempt * 75))
+    }
+    return false
+  }, [])
+
   const togglePower = useLockFn(async () => {
     setBusy(true)
     try {
@@ -2468,14 +2501,19 @@ const HomePage = () => {
   // 真实发起一次 HTTP 探测；viaProxy=true 时强制走核心混合端口，
   // 等价于「浏览器开了代理后」的真实出网路径。
   const probe = useCallback(
-    async (url: string, viaProxy: boolean, timeout = 6000) => {
+    async (
+      url: string,
+      viaProxy: boolean,
+      timeout = 6000,
+      proxyOverride = '',
+    ) => {
       const ctrl = new AbortController()
       const t = setTimeout(() => ctrl.abort(), timeout)
       try {
         const res = await tauriFetch(url, {
           method: 'GET',
           signal: ctrl.signal,
-          ...(viaProxy ? { proxy: { all: proxyUrl } } : {}),
+          ...(viaProxy ? { proxy: { all: proxyOverride || proxyUrl } } : {}),
         })
         return res.status >= 200 && res.status < 400
       } catch {
@@ -2487,56 +2525,154 @@ const HomePage = () => {
     [proxyUrl],
   )
 
-  const startImportedProfile = async () => {
-    const portAlive = async () =>
-      (await probe('https://www.baidu.com', true, 8000)) ||
-      (await probe('https://www.gstatic.com/generate_204', true, 8000))
+  const startImportedProfile = async (activateProfile: () => Promise<void>) => {
+    const testUrl = 'https://www.gstatic.com/generate_204'
+    let activated = false
 
-    if (proxyStateMismatch) await toggleSystemProxy(false).catch(() => {})
-    await startCore().catch(() => restartCore())
-    if (!(await waitForCoreReady())) {
-      await restartCore()
-      if (!(await waitForCoreReady())) {
-        throw new Error('订阅已导入，但核心控制器启动失败')
-      }
-    }
-    await mutateSystemState()
-
-    const useTun =
-      localStorage.getItem('SHENXIANYUN_POWER_START_TUN') === '1' &&
-      isTunModeAvailable
-    if (useTun) {
-      await patchVerge({ enable_tun_mode: true })
-      if (systemProxyOn || systemProxyConfigOn) {
+    try {
+      // 新配置通过节点预检前不能接管系统流量。先停用旧 TUN/系统代理，
+      // 再彻底停止旧核心，避免控制器仍指向旧配置而产生假阳性。
+      if (tunOn) await patchVerge({ enable_tun_mode: false })
+      if (systemProxyOn || systemProxyConfigOn || proxyStateMismatch) {
         await toggleSystemProxy(false)
       }
-    } else {
-      if (tunOn) await patchVerge({ enable_tun_mode: false })
-      await toggleSystemProxy(true)
-    }
-    await invalidateProxyState()
-    await refreshAll()
-    await new Promise((resolve) => setTimeout(resolve, 800))
+      await invalidateProxyState()
+      await stopCore().catch(() => undefined)
+      if (!(await waitForCoreStopped())) {
+        throw new Error('旧核心未能停止，已取消切换以避免加载错误配置')
+      }
 
-    if (!(await portAlive())) {
-      await restartCore()
-      if (!useTun) {
-        await toggleSystemProxy(false).catch(() => {})
+      await activateProfile()
+      activated = true
+      // 配置切换命令会在核心已停止时尝试用新配置重启；若控制器仍未就绪，
+      // 再显式启动，避免对刚成功启动的新核心做一次无意义的二次重启。
+      if (!(await waitForCoreReady())) {
+        await startCore().catch(() => restartCore())
+        if (!(await waitForCoreReady())) {
+          await restartCore()
+          if (!(await waitForCoreReady())) {
+            throw new Error('新订阅核心控制器启动失败')
+          }
+        }
+      }
+      await mutateSystemState()
+
+      // 直接读取 Mihomo 控制器，避免使用 React Query 中切换前的旧策略组。
+      const [runtimeConfig, runtimeProxies] = await Promise.all([
+        getBaseConfig(),
+        calcuProxies(),
+      ])
+      const runtimeMode = String(runtimeConfig.mode || '').toLowerCase()
+      const primaryGroup =
+        runtimeMode === 'global' && runtimeProxies.global?.all?.length
+          ? runtimeProxies.global
+          : pickPrimaryGroup(runtimeProxies.groups)
+      if (!primaryGroup?.name) {
+        throw new ImportNodeHealthError('新订阅没有可用于联网检查的主策略组', 0)
+      }
+
+      const candidateNames = listImportNodeCandidates(primaryGroup.all || [])
+      if (candidateNames.length === 0) {
+        throw new ImportNodeHealthError('新订阅主策略组中没有可用的代理节点', 0)
+      }
+
+      let delays: Record<string, number>
+      try {
+        // Mihomo 在一个有总超时的批量检查中并发测试该组；超时节点不会
+        // 出现在返回值里。这里访问的是公共 204 测试页，不会重复访问订阅站。
+        delays = await delayGroup(
+          primaryGroup.name,
+          testUrl,
+          DELAY_TIMEOUT,
+          true,
+        )
+      } catch (error) {
+        throw new ImportNodeHealthError(
+          `节点连通性检测未完成：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          candidateNames.length,
+        )
+      }
+
+      for (const name of candidateNames) {
+        delayManager.setDelay(name, primaryGroup.name, delays[name] || 1e6)
+      }
+      const healthyNodes = rankHealthyImportNodes(
+        candidateNames,
+        delays,
+        DELAY_TIMEOUT,
+      )
+      if (healthyNodes.length === 0) {
+        throw new ImportNodeHealthError(
+          `已检测 ${candidateNames.length} 个候选节点，但没有节点能够联网`,
+          candidateNames.length,
+        )
+      }
+
+      const runtimeProxyUrl = `http://127.0.0.1:${
+        runtimeConfig.mixedPort || mixedPort
+      }`
+      let selectedNode: (typeof healthyNodes)[number] | undefined
+
+      // 批量延迟成功已经证明节点能访问测试页；再从最快节点开始做最多三次
+      // 混合端口复检，覆盖“节点 API 成功但实际客户端代理入口未就绪”的情况。
+      for (const candidate of healthyNodes.slice(0, 3)) {
+        await selectNodeForGroup(primaryGroup.name, candidate.name)
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        if (await probe(testUrl, true, 6000, runtimeProxyUrl)) {
+          selectedNode = candidate
+          break
+        }
+      }
+      if (!selectedNode) {
+        throw new ImportNodeHealthError(
+          `检测到 ${healthyNodes.length} 个可用候选节点，但客户端代理链路复检失败`,
+          candidateNames.length,
+          healthyNodes.length,
+        )
+      }
+
+      // 把自动选择结果保存到刚激活的配置，防止核心重启后又回到失效首节点。
+      const profileState = await getProfiles()
+      const activeProfile = profileState.items?.find(
+        (item) => item.uid === profileState.current,
+      )
+      if (!activeProfile?.uid) {
+        throw new Error('无法保存新订阅的可用节点选择')
+      }
+      const selected = (activeProfile.selected || []).filter(
+        (item) => item.name !== primaryGroup.name,
+      )
+      selected.push({ name: primaryGroup.name, now: selectedNode.name })
+      await patchProfile(activeProfile.uid, { selected })
+      await syncTrayProxySelection().catch(() => undefined)
+
+      // 节点与客户端代理入口都通过后，才恢复用户选择的接管方式。
+      const useTun =
+        localStorage.getItem('SHENXIANYUN_POWER_START_TUN') === '1' &&
+        isTunModeAvailable
+      if (useTun) {
+        await patchVerge({ enable_tun_mode: true })
+      } else {
         await toggleSystemProxy(true)
       }
       await invalidateProxyState()
-      await new Promise((resolve) => setTimeout(resolve, 1200))
-    }
+      await refreshAll()
 
-    if (!(await portAlive())) {
-      await patchVerge({ enable_tun_mode: false }).catch(() => {})
-      await toggleSystemProxy(false).catch(() => {})
-      await stopCore().catch(() => {})
-      await invalidateProxyState().catch(() => {})
-      await refreshAll().catch(() => {})
-      throw new Error(
-        '订阅已导入，但代理联网检查失败；已关闭代理以恢复本机网络',
-      )
+      return {
+        candidateCount: candidateNames.length,
+        healthyCount: healthyNodes.length,
+        selectedName: selectedNode.name,
+      }
+    } catch (error) {
+      // 回滚事务会重新加载旧配置；这里先保证失败的新配置不再接管网络。
+      await patchVerge({ enable_tun_mode: false }).catch(() => undefined)
+      await toggleSystemProxy(false).catch(() => undefined)
+      await stopCore().catch(() => undefined)
+      await invalidateProxyState().catch(() => undefined)
+      if (activated) await refreshAll().catch(() => undefined)
+      throw error
     }
   }
 
@@ -2547,11 +2683,13 @@ const HomePage = () => {
   }) => {
     if (!snapshot.wasRunning) return
 
-    await startCore().catch(() => restartCore())
     if (!(await waitForCoreReady())) {
-      await restartCore()
+      await startCore().catch(() => restartCore())
       if (!(await waitForCoreReady())) {
-        throw new Error('旧配置已恢复，但核心控制器未能重新启动')
+        await restartCore()
+        if (!(await waitForCoreReady())) {
+          throw new Error('旧配置已恢复，但核心控制器未能重新启动')
+        }
       }
     }
     await mutateSystemState()
@@ -2606,11 +2744,11 @@ const HomePage = () => {
           request.apiBase,
         )
         setCodeImportPhase('starting')
-        await startImportedProfile()
+        const health = await startImportedProfile(transaction.activate)
         await transaction.commit()
         setCodeImportPhase('success')
         setCodeImportMessage(
-          `订阅已安全导入，网络连接正常${
+          `订阅已安全导入，已从 ${health.candidateCount} 个候选中检测到 ${health.healthyCount} 个可用节点${
             transaction.data.expires_at
               ? `，到期 ${transaction.data.expires_at}`
               : ''
@@ -2630,7 +2768,7 @@ const HomePage = () => {
           recoveryFailure
             ? `安全导入失败，且自动恢复未完成：${recoveryFailure}`
             : error instanceof Error
-              ? error.message
+              ? `${error.message}；已恢复原订阅和原网络状态。`
               : '安全导入失败，请返回网页重新点击一键导入',
         )
       } finally {
@@ -2684,12 +2822,14 @@ const HomePage = () => {
     try {
       transaction = await activateCode(value, 3, updatePhase)
       updatePhase('starting')
-      await startImportedProfile()
+      const health = await startImportedProfile(transaction.activate)
       await transaction.commit()
       setCode('')
       updatePhase('success')
       setCodeImportMessage(
-        `${isSwitchingCode ? '提取码已切换' : '订阅已导入'}，网络连接正常${
+        `${isSwitchingCode ? '提取码已切换' : '订阅已导入'}，已从 ${
+          health.candidateCount
+        } 个候选中检测到 ${health.healthyCount} 个可用节点${
           transaction.data.expires_at
             ? `，到期 ${transaction.data.expires_at}`
             : ''
@@ -2712,11 +2852,13 @@ const HomePage = () => {
               ? '提取码验证失败，请检查提取码或网络后重试。'
               : failedPhase === 'downloading'
                 ? '订阅获取失败，请稍后重新检测。'
-                : transaction
-                  ? '新订阅联网检查失败，已恢复原订阅和原网络状态。'
-                  : error instanceof Error
-                    ? error.message
-                    : '订阅启动失败，请稍后重试。',
+                : transaction && error instanceof Error
+                  ? `${error.message}；已恢复原订阅和原网络状态。`
+                  : transaction
+                    ? '新订阅联网检查失败，已恢复原订阅和原网络状态。'
+                    : error instanceof Error
+                      ? error.message
+                      : '订阅启动失败，请稍后重试。',
       )
     } finally {
       setBusy(false)
