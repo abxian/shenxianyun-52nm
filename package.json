@@ -31,6 +31,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test:import-health": "node --test scripts/test-import-node-health.mjs",
+    "test:subscription-refresh": "node --test scripts/test-subscription-refresh.mjs",
     "i18n:check": "node scripts/cleanup-unused-i18n.mjs",
     "i18n:format": "node scripts/cleanup-unused-i18n.mjs --align --apply",
     "i18n:types": "node scripts/generate-i18n-keys.mjs",

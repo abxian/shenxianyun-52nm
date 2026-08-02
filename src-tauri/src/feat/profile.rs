@@ -236,7 +236,9 @@ pub async fn update_profile(
             Ok(outcome) => {
                 let message = outcome.to_string();
                 logging!(error, Type::Config, "[订阅更新] 更新失败: {}", message);
-                handle::Handle::notice_message("update_failed", message.clone());
+                if is_mannual_trigger {
+                    handle::Handle::notice_message("update_failed", message.clone());
+                }
                 if let Some((profile, content)) = previous_profile.as_ref()
                     && let Err(error) = restore_profile_update(uid, profile, content).await
                 {
@@ -246,7 +248,9 @@ pub async fn update_profile(
             }
             Err(err) => {
                 logging!(error, Type::Config, "[订阅更新] 更新失败: {}", err);
-                handle::Handle::notice_message("update_failed", format!("{err}"));
+                if is_mannual_trigger {
+                    handle::Handle::notice_message("update_failed", format!("{err}"));
+                }
                 if let Some((profile, content)) = previous_profile.as_ref()
                     && let Err(restore_error) = restore_profile_update(uid, profile, content).await
                 {

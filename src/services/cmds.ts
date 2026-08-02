@@ -51,10 +51,15 @@ export async function readProfileFile(index: string) {
   return invoke<string>('read_profile_file', { index })
 }
 
-export async function saveProfileFile(index: string, fileData: string) {
+export async function saveProfileFile(
+  index: string,
+  fileData: string,
+  options?: { suppressValidationNotice?: boolean },
+) {
   return invokeValidationWithBusyRetry('save_profile_file', {
     index,
     fileData,
+    suppressValidationNotice: options?.suppressValidationNotice ?? false,
   })
 }
 
@@ -72,8 +77,16 @@ export async function reorderProfile(activeId: string, overId: string) {
   })
 }
 
-export async function updateProfile(index: string, option?: IProfileOption) {
-  return invoke<void>('update_profile', { index, option })
+export async function updateProfile(
+  index: string,
+  option?: IProfileOption,
+  options?: { suppressFailureNotice?: boolean },
+) {
+  return invoke<void>('update_profile', {
+    index,
+    option,
+    suppressFailureNotice: options?.suppressFailureNotice ?? false,
+  })
 }
 
 export async function deleteProfile(index: string) {

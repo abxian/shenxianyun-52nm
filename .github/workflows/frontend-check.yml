@@ -77,3 +77,7 @@ jobs:
       - name: Run managed import node health tests
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm test:import-health
+
+      - name: Run subscription refresh policy tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm test:subscription-refresh

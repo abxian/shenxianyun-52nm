@@ -16,7 +16,11 @@ use tokio::fs;
 
 /// 保存profiles的配置
 #[tauri::command]
-pub async fn save_profile_file(index: String, file_data: Option<String>) -> CmdResult<ValidationOutcome> {
+pub async fn save_profile_file(
+    index: String,
+    file_data: Option<String>,
+    suppress_validation_notice: Option<bool>,
+) -> CmdResult<ValidationOutcome> {
     let file_data = match file_data {
         Some(d) => d,
         None => return Ok(ValidationOutcome::Valid),
@@ -71,6 +75,7 @@ pub async fn save_profile_file(index: String, file_data: Option<String>) -> CmdR
         is_merge_file,
         is_script_file,
         affects_runtime,
+        !suppress_validation_notice.unwrap_or(false),
     )
     .await?;
 
@@ -115,6 +120,7 @@ async fn handle_saved_profile_file(
     is_merge_file: bool,
     is_script_file: bool,
     affects_runtime: bool,
+    emit_validation_notice: bool,
 ) -> CmdResult<ValidationOutcome> {
     let (target, file_type) = if is_script_file {
         (ValidationNoticeTarget::Script, "脚本文件")
@@ -139,7 +145,9 @@ async fn handle_saved_profile_file(
         Ok(outcome) => {
             logging!(warn, Type::Config, "[cmd配置save] 文件验证失败: {}", outcome);
             restore_original(file_path, original_content).await?;
-            handle_validation_notice(&outcome, target, file_type);
+            if emit_validation_notice {
+                handle_validation_notice(&outcome, target, file_type);
+            }
             return Ok(outcome);
         }
         Err(e) => {
@@ -166,7 +174,9 @@ async fn handle_saved_profile_file(
         Ok(outcome) => {
             logging!(warn, Type::Config, "[cmd配置save] 运行时配置应用失败: {}", outcome);
             restore_original(file_path, original_content).await?;
-            handle_validation_notice(&outcome, ValidationNoticeTarget::Runtime, "运行时配置");
+            if emit_validation_notice {
+                handle_validation_notice(&outcome, ValidationNoticeTarget::Runtime, "运行时配置");
+            }
             Ok(outcome)
         }
         Err(err) => {
