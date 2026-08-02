@@ -50,3 +50,25 @@ test('does not refresh before a current profile is ready', () => {
     null,
   )
 })
+
+test('refreshes once the current profile becomes ready', () => {
+  const startupRefreshPending = true
+  assert.equal(
+    planSubscriptionRefresh({
+      hasCurrentProfile: false,
+      startupRefreshPending,
+      remoteVersion: 9,
+      localVersion: 9,
+    }),
+    null,
+  )
+  assert.equal(
+    planSubscriptionRefresh({
+      hasCurrentProfile: true,
+      startupRefreshPending,
+      remoteVersion: 9,
+      localVersion: 9,
+    }),
+    'startup',
+  )
+})

@@ -156,6 +156,7 @@ const CODE_PROFILE_UID_KEY = 'shenxianyun.codeProfileUid'
 const DELAY_TIMEOUT = 5000
 // 服务端以 3 分钟内 last_seen 判断在线，60 秒心跳留足网络抖动余量。
 const HEARTBEAT_INTERVAL_MS = 60_000
+const ACCOUNT_STATE_SYNC_INTERVAL_MS = 60_000
 const TRAFFIC_REPORT_INTERVAL_MS = 300_000
 const MAX_TRAFFIC_REPORT_DELTA = 5 * 1024 * 1024 * 1024
 // 订阅更新轮询：仅在已连接时运行，基础间隔 10 分钟，失败时指数退避到最多 1 小时。
@@ -1974,6 +1975,36 @@ const HomePage = () => {
     }
   }, [currentCode, running, sendClientPresence])
 
+  // 核心停止时不应发送“在线”心跳，但仍需让网站续费结果及时反映到客户端。
+  // 这里只读取轻量状态，不下载订阅；窗口重新获得焦点时立即同步，前台停留时最多等待一分钟。
+  useEffect(() => {
+    if (!currentCode || running) return
+
+    const syncAccountState = () => {
+      if (document.visibilityState === 'hidden' || updateInFlightRef.current) {
+        return
+      }
+      updateState(currentCode)
+        .then((state) => syncExpiresAt(state.expires_at))
+        .catch(() => undefined)
+    }
+    const syncWhenVisible = () => {
+      if (document.visibilityState === 'visible') syncAccountState()
+    }
+
+    const timer = window.setInterval(
+      syncAccountState,
+      ACCOUNT_STATE_SYNC_INTERVAL_MS,
+    )
+    window.addEventListener('focus', syncAccountState)
+    document.addEventListener('visibilitychange', syncWhenVisible)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', syncAccountState)
+      document.removeEventListener('visibilitychange', syncWhenVisible)
+    }
+  }, [currentCode, running, syncExpiresAt, updateState])
+
   useEffect(() => {
     trafficTotalsRef.current = {
       upload: connectionResponse.data?.uploadTotal ?? 0,
@@ -2018,7 +2049,8 @@ const HomePage = () => {
   // 每个客户端进程启动后刷新一次订阅；后续只在已连接时轻量检查服务端版本。
   // 定时检查不会盲目下载整份订阅，失败时指数退避并叠加抖动，避免惊群。
   useEffect(() => {
-    if (!managedAuthReady || !currentCode) return
+    // 等当前配置真正加载完成后才消费“一次启动刷新”标记，避免启动时序较慢时漏刷。
+    if (!managedAuthReady || !currentCode || !current?.uid) return
 
     let startupRefreshPending = false
     if (!startupRefreshAttemptedRef.current) {
