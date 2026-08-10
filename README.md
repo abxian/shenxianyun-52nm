@@ -101,6 +101,12 @@ does not consume the original Shenxianyun update channel.
 - A workflow artifact is a temporary build result, not a published client. Publishing remains a separate, explicitly authorized step.
 - The release workflow is tag-only. Do not create a `v*` tag unless a new version has been approved.
 
+### Managed client heartbeat
+
+- While the core is running, the client reports its latest presence about every 120–140 seconds; per-cycle jitter spreads requests across devices while remaining inside the server's three-minute online window.
+- A failed report leaves only the latest desired state in local storage. The next scheduled report or the browser `online` event retries it; historical heartbeats are never replayed in bulk.
+- macOS builds must not use `Array.prototype.at()` in runtime frontend code because older Intel macOS WebKit versions do not provide it.
+
 To run the development server, execute the following commands after all prerequisites for **Tauri** are installed:
 
 ```shell

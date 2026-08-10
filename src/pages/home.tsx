@@ -149,13 +149,16 @@ const CODE_EXPIRES_STORAGE_KEY = 'shenxianyun.accessExpiresAt'
 const CODE_UPDATE_VERSION_STORAGE_KEY = 'shenxianyun.updateVersion'
 const STARTUP_REFRESH_SESSION_KEY = 'shenxianyun.startupSubscriptionRefresh.v1'
 const CLIENT_ID_STORAGE_KEY = 'shenxianyun.clientId'
+const PENDING_PRESENCE_STORAGE_KEY = 'shenxianyun.pendingPresence.v1'
 // 到期占位配置的本地 UID，续费恢复后用它定位并删除占位配置。
 const EXPIRED_PROFILE_UID_KEY = 'shenxianyun.expiredProfileUid'
 // 「提取码订阅」对应的配置 UID。切码/恢复时只替换这一张，保留用户手动导入/新建的其它配置。
 const CODE_PROFILE_UID_KEY = 'shenxianyun.codeProfileUid'
 const DELAY_TIMEOUT = 5000
-// 服务端以 3 分钟内 last_seen 判断在线，60 秒心跳留足网络抖动余量。
-const HEARTBEAT_INTERVAL_MS = 60_000
+// 服务端以 3 分钟内 last_seen 判断在线。120 秒基础间隔配合最多 20 秒抖动，
+// 在保留网络波动余量的同时，把稳定在线客户端的请求量降低约一半。
+const HEARTBEAT_INTERVAL_MS = 120_000
+const HEARTBEAT_JITTER_MS = 20_000
 const ACCOUNT_STATE_SYNC_INTERVAL_MS = 60_000
 const TRAFFIC_REPORT_INTERVAL_MS = 300_000
 const MAX_TRAFFIC_REPORT_DELTA = 5 * 1024 * 1024 * 1024
@@ -164,6 +167,46 @@ const UPDATE_POLL_BASE_MS = 600_000
 const UPDATE_POLL_MAX_MS = 3_600_000
 const EXPIRED_NODE_NAME = '提取码到期，请续费使用'
 const EXPIRED_PROFILE_NAME = '提取码已到期'
+
+type PendingPresence = {
+  id: string
+  accessCode: string
+  online: boolean
+  createdAt: number
+}
+
+const queuePendingPresence = (
+  accessCode: string,
+  online: boolean,
+): PendingPresence => {
+  const pending = {
+    id: crypto.randomUUID?.() || `presence-${Date.now().toString(36)}`,
+    accessCode,
+    online,
+    createdAt: Date.now(),
+  }
+  try {
+    localStorage.setItem(PENDING_PRESENCE_STORAGE_KEY, JSON.stringify(pending))
+  } catch {
+    // 存储不可用时仍允许本次上报；下一轮心跳会继续尝试。
+  }
+  return pending
+}
+
+const clearPendingPresence = (id: string) => {
+  try {
+    const raw = localStorage.getItem(PENDING_PRESENCE_STORAGE_KEY)
+    if (!raw) return
+    const current = JSON.parse(raw) as Partial<PendingPresence>
+    // 只清除本次已确认的状态，避免较早的在线请求误删随后写入的离线状态。
+    if (current.id === id) localStorage.removeItem(PENDING_PRESENCE_STORAGE_KEY)
+  } catch {
+    localStorage.removeItem(PENDING_PRESENCE_STORAGE_KEY)
+  }
+}
+
+const heartbeatDelay = () =>
+  HEARTBEAT_INTERVAL_MS + Math.floor(Math.random() * HEARTBEAT_JITTER_MS)
 // 生成一个只含单个本地不可上网节点的占位配置：所有流量指向一个不可达的本地 socks5，
 // 客户端因此无法上网，而节点名直接提示用户续费。
 const buildExpiredProfileYaml = () =>
@@ -644,7 +687,7 @@ const getNodeDelay = (proxy: IProxyItem, groupName = '') => {
     ? delayManager.getDelayFix(proxy, groupName)
     : -1
   if (testedDelay >= 0) return testedDelay
-  return proxy.history?.at(-1)?.delay ?? -1
+  return proxy.history?.slice(-1)[0]?.delay ?? -1
 }
 
 const formatNodeLabel = (proxy: IProxyItem, groupName = '') => {
@@ -1180,7 +1223,7 @@ const HomePage = () => {
         const list = await getProfiles()
         const newest = (list.items || [])
           .filter((item) => item.uid && !previousProfileIds.has(item.uid))
-          .at(-1)
+          .slice(-1)[0]
         if (!newest?.uid) throw new Error('无法定位新导入的订阅')
         newestUid = newest.uid
 
@@ -1499,6 +1542,7 @@ const HomePage = () => {
     async (online: boolean) => {
       const value = currentCode
       if (!value) return
+      const pending = queuePendingPresence(value, online)
       const auth = managedAuthRef.current
       if (auth?.accessCode === value) {
         const endpoint = online ? 'heartbeat' : 'offline'
@@ -1543,6 +1587,7 @@ const HomePage = () => {
           throw new Error(data?.message || '设备状态上报失败')
         }
         if (online) await syncExpiresAt(data.expires_at)
+        clearPendingPresence(pending.id)
         return
       }
       const endpoint = online ? 'heartbeat' : 'offline'
@@ -1576,6 +1621,7 @@ const HomePage = () => {
         )
       }
       if (online) await syncExpiresAt(data.expires_at)
+      clearPendingPresence(pending.id)
     },
     [apiFetch, currentCode, stopForServerLimit, syncExpiresAt],
   )
@@ -1769,7 +1815,7 @@ const HomePage = () => {
         buildExpiredProfileYaml(),
       )
       const refreshed = await getProfiles()
-      targetUid = refreshed.items?.at(-1)?.uid
+      targetUid = refreshed.items?.slice(-1)[0]?.uid
       if (targetUid) {
         localStorage.setItem(EXPIRED_PROFILE_UID_KEY, targetUid)
         setExpiredProfileUid(targetUid)
@@ -1965,12 +2011,24 @@ const HomePage = () => {
 
   useEffect(() => {
     if (!running || !currentCode) return
-    sendClientPresence(true).catch(() => undefined)
-    const timer = window.setInterval(() => {
+    let timer: number | undefined
+    let cancelled = false
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        await sendClientPresence(true).catch(() => undefined)
+        if (!cancelled) schedule()
+      }, heartbeatDelay())
+    }
+    const flushWhenOnline = () => {
       sendClientPresence(true).catch(() => undefined)
-    }, HEARTBEAT_INTERVAL_MS)
+    }
+    sendClientPresence(true).catch(() => undefined)
+    schedule()
+    window.addEventListener('online', flushWhenOnline)
     return () => {
-      window.clearInterval(timer)
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      window.removeEventListener('online', flushWhenOnline)
       sendClientPresence(false).catch(() => undefined)
     }
   }, [currentCode, running, sendClientPresence])
@@ -2284,7 +2342,7 @@ const HomePage = () => {
       const list = await getProfiles()
       const newest = (list.items || [])
         .filter((item) => item.uid && !previousIds.has(item.uid))
-        .at(-1)
+        .slice(-1)[0]
       if (newest?.uid) {
         const switched = await patchProfilesConfig({ current: newest.uid })
         if (!switched) {
