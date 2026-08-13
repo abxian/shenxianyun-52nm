@@ -887,6 +887,9 @@ const HomePage = () => {
   const trafficTotalsRef = useRef({ upload: 0, download: 0 })
   const lastReportedTrafficRef = useRef({ upload: 0, download: 0 })
   const trafficCounterRef = useRef<ManagedTrafficCounter | null>(null)
+  const pendingManagedTrafficRef = useRef<
+    ReturnType<typeof managedTrafficPayload> | undefined
+  >(undefined)
   const sendClientPresenceRef = useRef<
     ((online: boolean) => Promise<void>) | null
   >(null)
@@ -1702,8 +1705,10 @@ const HomePage = () => {
       }
       trafficCounterRef.current = counter
       localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
-      const pending = managedTrafficPayload(counter)
+      const pending =
+        pendingManagedTrafficRef.current || managedTrafficPayload(counter)
       if (pending.upload_total <= 0 && pending.download_total <= 0) return
+      pendingManagedTrafficRef.current = pending
 
       const response = await apiFetch(`${auth.apiBase}/api/v2/client/traffic`, {
         method: 'POST',
@@ -1736,19 +1741,23 @@ const HomePage = () => {
       if (response.status === 409 && data?.code === 'counter_reset') {
         const reset = createManagedTrafficCounter(value, current)
         trafficCounterRef.current = reset
+        pendingManagedTrafficRef.current = undefined
         localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(reset))
         return
       }
       if (!response.ok || !data?.ok) {
         if (data?.code === 'traffic_limit') {
+          pendingManagedTrafficRef.current = undefined
           await stopForServerLimit(data.message || '流量额度已用尽，代理已停止')
         }
         throw new Error(data?.message || '客户端流量上报失败')
       }
+      const latestCounter = trafficCounterRef.current || counter
       const acknowledged = coreCounterReset
         ? createManagedTrafficCounter(value, current)
-        : acknowledgeManagedTraffic(counter, pending.sequence)
+        : acknowledgeManagedTraffic(latestCounter, pending.sequence)
       trafficCounterRef.current = acknowledged
+      pendingManagedTrafficRef.current = undefined
       localStorage.setItem(
         MANAGED_TRAFFIC_STORAGE_KEY,
         JSON.stringify(acknowledged),
@@ -2165,6 +2174,7 @@ const HomePage = () => {
       restored ||
       createManagedTrafficCounter(currentCode, trafficTotalsRef.current)
     trafficCounterRef.current = counter
+    pendingManagedTrafficRef.current = undefined
     localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
 
     // 启动后立即补报崩溃前已观测但尚未确认的累计值，不再固定丢失最后五分钟。
