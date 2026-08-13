@@ -133,6 +133,14 @@ import {
   type ManagedAuth,
   type ManagedImportRequest,
 } from '@/services/managed-subscription'
+import {
+  acknowledgeManagedTraffic,
+  createManagedTrafficCounter,
+  managedTrafficPayload,
+  observeManagedTraffic,
+  parseManagedTrafficCounter,
+  type ManagedTrafficCounter,
+} from '@/services/managed-traffic-counter'
 import getSystem from '@/utils/get-system'
 import {
   ImportNodeHealthError,
@@ -150,17 +158,18 @@ const CODE_UPDATE_VERSION_STORAGE_KEY = 'shenxianyun.updateVersion'
 const STARTUP_REFRESH_SESSION_KEY = 'shenxianyun.startupSubscriptionRefresh.v1'
 const CLIENT_ID_STORAGE_KEY = 'shenxianyun.clientId'
 const PENDING_PRESENCE_STORAGE_KEY = 'shenxianyun.pendingPresence.v1'
+const MANAGED_TRAFFIC_STORAGE_KEY = 'shenxianyun.managedTraffic.v1'
 // 到期占位配置的本地 UID，续费恢复后用它定位并删除占位配置。
 const EXPIRED_PROFILE_UID_KEY = 'shenxianyun.expiredProfileUid'
 // 「提取码订阅」对应的配置 UID。切码/恢复时只替换这一张，保留用户手动导入/新建的其它配置。
 const CODE_PROFILE_UID_KEY = 'shenxianyun.codeProfileUid'
 const DELAY_TIMEOUT = 5000
-// 服务端以 3 分钟内 last_seen 判断在线。120 秒基础间隔配合最多 20 秒抖动，
-// 在保留网络波动余量的同时，把稳定在线客户端的请求量降低约一半。
+// 服务端以 5 分钟内 last_seen 判断在线。即使漏掉一轮，下一轮仍在在线窗口内。
 const HEARTBEAT_INTERVAL_MS = 120_000
 const HEARTBEAT_JITTER_MS = 20_000
 const ACCOUNT_STATE_SYNC_INTERVAL_MS = 60_000
-const TRAFFIC_REPORT_INTERVAL_MS = 300_000
+// 一分钟累计上报兼顾限额响应速度；幂等计数器会持久化，失败或崩溃后只重试最新累计值。
+const TRAFFIC_REPORT_INTERVAL_MS = 60_000
 const MAX_TRAFFIC_REPORT_DELTA = 5 * 1024 * 1024 * 1024
 // 订阅更新轮询：仅在已连接时运行，基础间隔 10 分钟，失败时指数退避到最多 1 小时。
 const UPDATE_POLL_BASE_MS = 600_000
@@ -207,6 +216,17 @@ const clearPendingPresence = (id: string) => {
 
 const heartbeatDelay = () =>
   HEARTBEAT_INTERVAL_MS + Math.floor(Math.random() * HEARTBEAT_JITTER_MS)
+
+const formatUsageBytes = (value: number) => {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = Math.max(0, Number(value) || 0)
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${unit === 0 ? Math.round(size) : size.toFixed(2)} ${units[unit]}`
+}
 // 生成一个只含单个本地不可上网节点的占位配置：所有流量指向一个不可达的本地 socks5，
 // 客户端因此无法上网，而节点名直接提示用户续费。
 const buildExpiredProfileYaml = () =>
@@ -364,6 +384,19 @@ type UpdateStateResponse = {
   update_version?: number
   expires_at?: string | null
   message?: string
+}
+
+type ClientAccountState = {
+  dayUsed: number
+  monthUsed: number
+  dayLimit: number
+  monthLimit: number
+  onlineDevices: number
+  onlineLimit: number
+  boundDevices: number
+  boundLimit: number
+  showUsage: boolean
+  updatedAt: number
 }
 
 type ManagedProfileUpdateResult =
@@ -757,6 +790,8 @@ const HomePage = () => {
   const [status, setStatus] = useState(
     savedCode ? '提取码已保存，会自动检查订阅更新。' : '',
   )
+  const [clientAccountState, setClientAccountState] =
+    useState<ClientAccountState | null>(null)
   const [codeDialogOpen, setCodeDialogOpen] = useState(false)
   const [codeImportPhase, setCodeImportPhase] =
     useState<CodeImportPhase>('input')
@@ -851,17 +886,10 @@ const HomePage = () => {
   const [nowMs, setNowMs] = useState(() => Date.now())
   const trafficTotalsRef = useRef({ upload: 0, download: 0 })
   const lastReportedTrafficRef = useRef({ upload: 0, download: 0 })
-  const trafficCounterRef = useRef({
-    id: '',
-    sequence: 0,
-    baseUpload: 0,
-    baseDownload: 0,
-  })
-  const pendingTrafficRef = useRef<{
-    sequence: number
-    uploadTotal: number
-    downloadTotal: number
-  } | null>(null)
+  const trafficCounterRef = useRef<ManagedTrafficCounter | null>(null)
+  const sendClientPresenceRef = useRef<
+    ((online: boolean) => Promise<void>) | null
+  >(null)
   const managedAuthRef = useRef<ManagedAuth | null>(null)
   // eslint-disable-next-line @eslint-react/no-unused-state -- readiness is consumed by the subscription lifecycle effect, not JSX.
   const [managedAuthReady, setManagedAuthReady] = useState(false)
@@ -1571,22 +1599,49 @@ const HomePage = () => {
           code?: string
           message?: string
           expires_at?: string | null
+          day_used?: number
+          month_used?: number
+          day_limit?: number
+          month_limit?: number
+          online_devices?: number
+          online_limit?: number
+          bound_devices?: number
+          bound_limit?: number
+          show_usage_status?: boolean
         } | null
         if (!response.ok || !data?.ok) {
           if (
             online &&
-            (data?.code === 'device_limit' || data?.code === 'traffic_limit')
+            (data?.code === 'device_limit' ||
+              data?.code === 'bound_limit' ||
+              data?.code === 'traffic_limit')
           ) {
             await stopForServerLimit(
               data.message ||
                 (data.code === 'traffic_limit'
                   ? '流量额度已用尽，代理已停止'
-                  : '在线设备数量已达到套餐上限，代理已停止'),
+                  : data.code === 'bound_limit'
+                    ? '绑定设备数量已达到套餐上限，代理已停止'
+                    : '在线设备数量已达到套餐上限，代理已停止'),
             )
           }
           throw new Error(data?.message || '设备状态上报失败')
         }
-        if (online) await syncExpiresAt(data.expires_at)
+        if (online) {
+          await syncExpiresAt(data.expires_at)
+          setClientAccountState({
+            dayUsed: Number(data.day_used) || 0,
+            monthUsed: Number(data.month_used) || 0,
+            dayLimit: Number(data.day_limit) || 0,
+            monthLimit: Number(data.month_limit) || 0,
+            onlineDevices: Number(data.online_devices) || 0,
+            onlineLimit: Number(data.online_limit) || 0,
+            boundDevices: Number(data.bound_devices) || 0,
+            boundLimit: Number(data.bound_limit) || 0,
+            showUsage: data.show_usage_status === true,
+            updatedAt: Date.now(),
+          })
+        }
         clearPendingPresence(pending.id)
         return
       }
@@ -1626,6 +1681,10 @@ const HomePage = () => {
     [apiFetch, currentCode, stopForServerLimit, syncExpiresAt],
   )
 
+  useEffect(() => {
+    sendClientPresenceRef.current = sendClientPresence
+  }, [sendClientPresence])
+
   const reportClientTraffic = useCallback(async () => {
     const value = currentCode
     if (!value || !running) return
@@ -1633,27 +1692,18 @@ const HomePage = () => {
     const current = trafficTotalsRef.current
     const auth = managedAuthRef.current
     if (auth?.accessCode === value) {
-      const counter = trafficCounterRef.current
-      if (
-        current.upload < counter.baseUpload ||
-        current.download < counter.baseDownload
-      ) {
-        trafficCounterRef.current = {
-          id: crypto.randomUUID?.() || `traffic-${Date.now().toString(36)}`,
-          sequence: 0,
-          baseUpload: current.upload,
-          baseDownload: current.download,
-        }
-        pendingTrafficRef.current = null
-        return
+      let counter =
+        trafficCounterRef.current || createManagedTrafficCounter(value, current)
+      const coreCounterReset =
+        current.upload < counter.observed.upload ||
+        current.download < counter.observed.download
+      if (!coreCounterReset) {
+        counter = observeManagedTraffic(counter, current).counter
       }
-      const pending = pendingTrafficRef.current || {
-        sequence: counter.sequence + 1,
-        uploadTotal: current.upload - counter.baseUpload,
-        downloadTotal: current.download - counter.baseDownload,
-      }
-      if (pending.uploadTotal <= 0 && pending.downloadTotal <= 0) return
-      pendingTrafficRef.current = pending
+      trafficCounterRef.current = counter
+      localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
+      const pending = managedTrafficPayload(counter)
+      if (pending.upload_total <= 0 && pending.download_total <= 0) return
 
       const response = await apiFetch(`${auth.apiBase}/api/v2/client/traffic`, {
         method: 'POST',
@@ -1666,10 +1716,7 @@ const HomePage = () => {
           'X-Client-Type': 'shenxianyun-windows',
         },
         body: JSON.stringify({
-          counter_id: counter.id,
-          sequence: pending.sequence,
-          upload_total: pending.uploadTotal,
-          download_total: pending.downloadTotal,
+          ...pending,
           platform: 'Windows电脑',
           app_name: `${getRuntimeBrand().client_name}桌面端`,
           app_version: DESKTOP_VERSION,
@@ -1681,26 +1728,45 @@ const HomePage = () => {
         duplicate?: boolean
         code?: string
         message?: string
+        day_used?: number
+        month_used?: number
+        day_limit?: number
+        month_limit?: number
       } | null
       if (response.status === 409 && data?.code === 'counter_reset') {
-        trafficCounterRef.current = {
-          id: crypto.randomUUID?.() || `traffic-${Date.now().toString(36)}`,
-          sequence: 0,
-          baseUpload: current.upload,
-          baseDownload: current.download,
-        }
-        pendingTrafficRef.current = null
+        const reset = createManagedTrafficCounter(value, current)
+        trafficCounterRef.current = reset
+        localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(reset))
         return
       }
       if (!response.ok || !data?.ok) {
         if (data?.code === 'traffic_limit') {
-          pendingTrafficRef.current = null
           await stopForServerLimit(data.message || '流量额度已用尽，代理已停止')
         }
         throw new Error(data?.message || '客户端流量上报失败')
       }
-      counter.sequence = pending.sequence
-      pendingTrafficRef.current = null
+      const acknowledged = coreCounterReset
+        ? createManagedTrafficCounter(value, current)
+        : acknowledgeManagedTraffic(counter, pending.sequence)
+      trafficCounterRef.current = acknowledged
+      localStorage.setItem(
+        MANAGED_TRAFFIC_STORAGE_KEY,
+        JSON.stringify(acknowledged),
+      )
+      if (data) {
+        setClientAccountState((previous) => ({
+          dayUsed: Number(data.day_used) || 0,
+          monthUsed: Number(data.month_used) || 0,
+          dayLimit: Number(data.day_limit) || 0,
+          monthLimit: Number(data.month_limit) || 0,
+          onlineDevices: previous?.onlineDevices || 0,
+          onlineLimit: previous?.onlineLimit || 0,
+          boundDevices: previous?.boundDevices || 0,
+          boundLimit: previous?.boundLimit || 0,
+          showUsage: previous?.showUsage === true,
+          updatedAt: Date.now(),
+        }))
+      }
       return
     }
     const previous = lastReportedTrafficRef.current
@@ -2011,27 +2077,29 @@ const HomePage = () => {
 
   useEffect(() => {
     if (!running || !currentCode) return
+    const sendPresence = sendClientPresenceRef.current
+    if (!sendPresence) return
     let timer: number | undefined
     let cancelled = false
     const schedule = () => {
       timer = window.setTimeout(async () => {
-        await sendClientPresence(true).catch(() => undefined)
+        await sendPresence(true).catch(() => undefined)
         if (!cancelled) schedule()
       }, heartbeatDelay())
     }
     const flushWhenOnline = () => {
-      sendClientPresence(true).catch(() => undefined)
+      sendPresence(true).catch(() => undefined)
     }
-    sendClientPresence(true).catch(() => undefined)
+    sendPresence(true).catch(() => undefined)
     schedule()
     window.addEventListener('online', flushWhenOnline)
     return () => {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
       window.removeEventListener('online', flushWhenOnline)
-      sendClientPresence(false).catch(() => undefined)
+      sendPresence(false).catch(() => undefined)
     }
-  }, [currentCode, running, sendClientPresence])
+  }, [currentCode, running])
 
   // 核心停止时不应发送“在线”心跳，但仍需让网站续费结果及时反映到客户端。
   // 这里只读取轻量状态，不下载订阅；窗口重新获得焦点时立即同步，前台停留时最多等待一分钟。
@@ -2068,6 +2136,16 @@ const HomePage = () => {
       upload: connectionResponse.data?.uploadTotal ?? 0,
       download: connectionResponse.data?.downloadTotal ?? 0,
     }
+    const counter = trafficCounterRef.current
+    if (!counter) return
+    const observed = observeManagedTraffic(counter, trafficTotalsRef.current)
+    // 核心累计值回退通常表示核心重启。旧累计值必须先成功补报，不能被新基线覆盖。
+    if (observed.reset) return
+    trafficCounterRef.current = observed.counter
+    localStorage.setItem(
+      MANAGED_TRAFFIC_STORAGE_KEY,
+      JSON.stringify(observed.counter),
+    )
   }, [
     connectionResponse.data?.downloadTotal,
     connectionResponse.data?.uploadTotal,
@@ -2076,23 +2154,21 @@ const HomePage = () => {
   useEffect(() => {
     if (!running || !currentCode) {
       lastReportedTrafficRef.current = trafficTotalsRef.current
-      trafficCounterRef.current = {
-        id: crypto.randomUUID?.() || `traffic-${Date.now().toString(36)}`,
-        sequence: 0,
-        baseUpload: trafficTotalsRef.current.upload,
-        baseDownload: trafficTotalsRef.current.download,
-      }
-      pendingTrafficRef.current = null
       return
     }
 
-    trafficCounterRef.current = {
-      id: crypto.randomUUID?.() || `traffic-${Date.now().toString(36)}`,
-      sequence: 0,
-      baseUpload: trafficTotalsRef.current.upload,
-      baseDownload: trafficTotalsRef.current.download,
-    }
-    pendingTrafficRef.current = null
+    const restored = parseManagedTrafficCounter(
+      localStorage.getItem(MANAGED_TRAFFIC_STORAGE_KEY),
+      currentCode,
+    )
+    const counter =
+      restored ||
+      createManagedTrafficCounter(currentCode, trafficTotalsRef.current)
+    trafficCounterRef.current = counter
+    localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
+
+    // 启动后立即补报崩溃前已观测但尚未确认的累计值，不再固定丢失最后五分钟。
+    reportClientTraffic().catch(() => undefined)
 
     const timer = window.setInterval(() => {
       reportClientTraffic().catch(() => undefined)
@@ -4210,6 +4286,26 @@ const HomePage = () => {
                       variant="outlined"
                       label={codeExpired ? '提取码已过期' : `到期 ${expiresAt}`}
                     />
+                  )}
+                  {clientAccountState?.showUsage && (
+                    <Stack spacing={0.35} sx={{ alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: 11, color: '#4d5a82' }}>
+                        在线 {clientAccountState.onlineDevices}/
+                        {clientAccountState.onlineLimit || '不限'} · 绑定{' '}
+                        {clientAccountState.boundDevices}/
+                        {clientAccountState.boundLimit || '不限'}
+                      </Typography>
+                      <Typography sx={{ fontSize: 11, color: '#4d5a82' }}>
+                        今日 {formatUsageBytes(clientAccountState.dayUsed)}/
+                        {clientAccountState.dayLimit
+                          ? formatUsageBytes(clientAccountState.dayLimit)
+                          : '不限'}{' '}
+                        · 本月 {formatUsageBytes(clientAccountState.monthUsed)}/
+                        {clientAccountState.monthLimit
+                          ? formatUsageBytes(clientAccountState.monthLimit)
+                          : '不限'}
+                      </Typography>
+                    </Stack>
                   )}
                 </Stack>
               </Stack>

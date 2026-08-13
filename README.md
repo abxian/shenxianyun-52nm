@@ -103,8 +103,10 @@ does not consume the original Shenxianyun update channel.
 
 ### Managed client heartbeat
 
-- While the core is running, the client reports its latest presence about every 120–140 seconds; per-cycle jitter spreads requests across devices while remaining inside the server's three-minute online window.
+- While the core is running, the client reports its latest presence about every 120–140 seconds; per-cycle jitter spreads requests across devices while remaining inside the server's five-minute online window even if one report is missed.
 - A failed report leaves only the latest desired state in local storage. The next scheduled report or the browser `online` event retries it; historical heartbeats are never replayed in bulk.
+- Managed traffic uses a persisted cumulative idempotency counter. The latest observed totals survive an app crash and are retried once per minute without replaying already accepted bytes.
+- Usage and device counts are hidden by default and can only be exposed by the server administrator; hiding them never disables accounting or limit enforcement.
 - macOS builds must not use `Array.prototype.at()` in runtime frontend code because older Intel macOS WebKit versions do not provide it.
 
 To run the development server, execute the following commands after all prerequisites for **Tauri** are installed:
