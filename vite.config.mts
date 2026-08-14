@@ -18,7 +18,14 @@ export default defineConfig({
     legacy({
       modernTargets: ['edge>=109', 'safari>=14'],
       renderLegacyChunks: false,
-      modernPolyfills: ['es.object.has-own', 'web.structured-clone'],
+      // Intel Macs can still run an older system WebKit even when the app
+      // itself is freshly installed. Dependencies (not only our source) may
+      // call Array.prototype.at(), so ship the runtime polyfill globally.
+      modernPolyfills: [
+        'es.array.at',
+        'es.object.has-own',
+        'web.structured-clone',
+      ],
       additionalModernPolyfills: [
         path.resolve('./src/polyfills/matchMedia.js'),
         path.resolve('./src/polyfills/WeakRef.js'),
