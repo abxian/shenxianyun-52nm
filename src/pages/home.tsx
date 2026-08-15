@@ -168,8 +168,10 @@ const DELAY_TIMEOUT = 5000
 const HEARTBEAT_INTERVAL_MS = 120_000
 const HEARTBEAT_JITTER_MS = 20_000
 const ACCOUNT_STATE_SYNC_INTERVAL_MS = 60_000
-// 一分钟累计上报兼顾限额响应速度；幂等计数器会持久化，失败或崩溃后只重试最新累计值。
-const TRAFFIC_REPORT_INTERVAL_MS = 60_000
+// 累计计数器会持久化，因此无需高频写入；五分钟基础间隔叠加抖动，避免客户端同时惊群。
+const TRAFFIC_REPORT_INTERVAL_MS = 300_000
+const TRAFFIC_REPORT_JITTER_MS = 60_000
+const TRAFFIC_REPORT_MAX_BACKOFF_MS = 1_800_000
 const MAX_TRAFFIC_REPORT_DELTA = 5 * 1024 * 1024 * 1024
 // 订阅更新轮询：仅在已连接时运行，基础间隔 10 分钟，失败时指数退避到最多 1 小时。
 const UPDATE_POLL_BASE_MS = 600_000
@@ -886,6 +888,8 @@ const HomePage = () => {
   const [nowMs, setNowMs] = useState(() => Date.now())
   const trafficTotalsRef = useRef({ upload: 0, download: 0 })
   const lastReportedTrafficRef = useRef({ upload: 0, download: 0 })
+  const trafficReportInFlightRef = useRef(false)
+  const trafficReportRetryAfterRef = useRef(0)
   const trafficCounterRef = useRef<ManagedTrafficCounter | null>(null)
   const pendingManagedTrafficRef = useRef<
     ReturnType<typeof managedTrafficPayload> | undefined
@@ -1738,6 +1742,12 @@ const HomePage = () => {
         day_limit?: number
         month_limit?: number
       } | null
+      if (response.status === 429 || response.status === 503) {
+        const retryAfterSeconds = Number(response.headers.get('Retry-After'))
+        trafficReportRetryAfterRef.current = Number.isFinite(retryAfterSeconds)
+          ? Math.max(0, retryAfterSeconds * 1000)
+          : 0
+      }
       if (response.status === 409 && data?.code === 'counter_reset') {
         const reset = createManagedTrafficCounter(value, current)
         trafficCounterRef.current = reset
@@ -2177,16 +2187,51 @@ const HomePage = () => {
     pendingManagedTrafficRef.current = undefined
     localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
 
-    // 启动后立即补报崩溃前已观测但尚未确认的累计值，不再固定丢失最后五分钟。
-    reportClientTraffic().catch(() => undefined)
+    let cancelled = false
+    let timer: number | undefined
+    let failures = 0
 
-    const timer = window.setInterval(() => {
-      reportClientTraffic().catch(() => undefined)
-    }, TRAFFIC_REPORT_INTERVAL_MS)
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(run, delay)
+    }
+    const run = async () => {
+      if (cancelled) return
+      if (trafficReportInFlightRef.current) {
+        schedule(TRAFFIC_REPORT_INTERVAL_MS)
+        return
+      }
+      trafficReportInFlightRef.current = true
+      try {
+        await reportClientTraffic()
+        failures = 0
+        trafficReportRetryAfterRef.current = 0
+        schedule(
+          TRAFFIC_REPORT_INTERVAL_MS +
+            Math.floor(Math.random() * TRAFFIC_REPORT_JITTER_MS),
+        )
+      } catch {
+        failures += 1
+        const backoff = Math.min(
+          TRAFFIC_REPORT_MAX_BACKOFF_MS,
+          TRAFFIC_REPORT_INTERVAL_MS * 2 ** Math.min(failures, 3),
+        )
+        schedule(
+          Math.max(
+            trafficReportRetryAfterRef.current,
+            backoff * (0.75 + Math.random() * 0.5),
+          ),
+        )
+      } finally {
+        trafficReportInFlightRef.current = false
+      }
+    }
+
+    // 启动补报也错峰，避免服务或网络恢复时所有客户端同时写入。
+    schedule(5_000 + Math.floor(Math.random() * 25_000))
 
     return () => {
-      window.clearInterval(timer)
-      reportClientTraffic().catch(() => undefined)
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [currentCode, reportClientTraffic, running])
 
