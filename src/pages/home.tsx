@@ -56,12 +56,7 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { useLockFn } from 'ahooks'
 import yaml from 'js-yaml'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  delayGroup,
-  getBaseConfig,
-  getVersion,
-  selectNodeForGroup,
-} from 'tauri-plugin-mihomo-api'
+import { getVersion } from 'tauri-plugin-mihomo-api'
 
 import { BasePage, type DialogRef } from '@/components/base'
 import { WebsiteTestViewer } from '@/components/home/website-test-viewer'
@@ -85,7 +80,6 @@ import { useUpdate } from '@/hooks/use-update'
 import { useVerge } from '@/hooks/use-verge'
 import { useAppData } from '@/providers/app-data-context'
 import {
-  calcuProxies,
   createLocalBackup,
   createProfile,
   enhanceProfiles,
@@ -106,7 +100,6 @@ import {
   saveProfileFile,
   startCore,
   stopCore,
-  syncTrayProxySelection,
   deleteProfile,
   updateProfile,
 } from '@/services/cmds'
@@ -142,11 +135,6 @@ import {
   type ManagedTrafficCounter,
 } from '@/services/managed-traffic-counter'
 import getSystem from '@/utils/get-system'
-import {
-  ImportNodeHealthError,
-  listImportNodeCandidates,
-  rankHealthyImportNodes,
-} from '@/utils/import-node-health'
 import {
   planSubscriptionRefresh,
   type SubscriptionRefreshReason,
@@ -2874,12 +2862,10 @@ const HomePage = () => {
   )
 
   const startImportedProfile = async (activateProfile: () => Promise<void>) => {
-    const testUrl = 'https://www.gstatic.com/generate_204'
     let activated = false
 
     try {
-      // 新配置通过节点预检前不能接管系统流量。先停用旧 TUN/系统代理，
-      // 再彻底停止旧核心，避免控制器仍指向旧配置而产生假阳性。
+      // 切换期间先解除系统流量接管，防止旧核心与新配置短暂交叉。
       if (tunOn) await patchVerge({ enable_tun_mode: false })
       if (systemProxyOn || systemProxyConfigOn || proxyStateMismatch) {
         await toggleSystemProxy(false)
@@ -2905,114 +2891,12 @@ const HomePage = () => {
       }
       await mutateSystemState()
 
-      // 直接读取 Mihomo 控制器，避免使用 React Query 中切换前的旧策略组。
-      const [runtimeConfig, runtimeProxies] = await Promise.all([
-        getBaseConfig(),
-        calcuProxies(),
-      ])
-      const runtimeMode = String(runtimeConfig.mode || '').toLowerCase()
-      const primaryGroup =
-        runtimeMode === 'global' && runtimeProxies.global?.all?.length
-          ? runtimeProxies.global
-          : pickPrimaryGroup(runtimeProxies.groups)
-      if (!primaryGroup?.name) {
-        throw new ImportNodeHealthError('新订阅没有可用于联网检查的主策略组', 0)
-      }
-
-      const candidateNames = listImportNodeCandidates(primaryGroup.all || [])
-      if (candidateNames.length === 0) {
-        throw new ImportNodeHealthError('新订阅主策略组中没有可用的代理节点', 0)
-      }
-
-      let delays: Record<string, number>
-      try {
-        // Mihomo 在一个有总超时的批量检查中并发测试该组；超时节点不会
-        // 出现在返回值里。这里访问的是公共 204 测试页，不会重复访问订阅站。
-        delays = await delayGroup(
-          primaryGroup.name,
-          testUrl,
-          DELAY_TIMEOUT,
-          true,
-        )
-      } catch (error) {
-        throw new ImportNodeHealthError(
-          `节点连通性检测未完成：${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          candidateNames.length,
-        )
-      }
-
-      for (const name of candidateNames) {
-        delayManager.setDelay(name, primaryGroup.name, delays[name] || 1e6)
-      }
-      const healthyNodes = rankHealthyImportNodes(
-        candidateNames,
-        delays,
-        DELAY_TIMEOUT,
-      )
-      if (healthyNodes.length === 0) {
-        throw new ImportNodeHealthError(
-          `已检测 ${candidateNames.length} 个候选节点，但没有节点能够联网`,
-          candidateNames.length,
-        )
-      }
-
-      const runtimeProxyUrl = `http://127.0.0.1:${
-        runtimeConfig.mixedPort || mixedPort
-      }`
-      let selectedNode: (typeof healthyNodes)[number] | undefined
-
-      // 批量延迟成功已经证明节点能访问测试页；再从最快节点开始做最多三次
-      // 混合端口复检，覆盖“节点 API 成功但实际客户端代理入口未就绪”的情况。
-      for (const candidate of healthyNodes.slice(0, 3)) {
-        await selectNodeForGroup(primaryGroup.name, candidate.name)
-        await new Promise((resolve) => setTimeout(resolve, 250))
-        if (await probe(testUrl, true, 6000, runtimeProxyUrl)) {
-          selectedNode = candidate
-          break
-        }
-      }
-      if (!selectedNode) {
-        throw new ImportNodeHealthError(
-          `检测到 ${healthyNodes.length} 个可用候选节点，但客户端代理链路复检失败`,
-          candidateNames.length,
-          healthyNodes.length,
-        )
-      }
-
-      // 把自动选择结果保存到刚激活的配置，防止核心重启后又回到失效首节点。
-      const profileState = await getProfiles()
-      const activeProfile = profileState.items?.find(
-        (item) => item.uid === profileState.current,
-      )
-      if (!activeProfile?.uid) {
-        throw new Error('无法保存新订阅的可用节点选择')
-      }
-      const selected = (activeProfile.selected || []).filter(
-        (item) => item.name !== primaryGroup.name,
-      )
-      selected.push({ name: primaryGroup.name, now: selectedNode.name })
-      await patchProfile(activeProfile.uid, { selected })
-      await syncTrayProxySelection().catch(() => undefined)
-
-      // 节点与客户端代理入口都通过后，才恢复用户选择的接管方式。
-      const useTun =
-        localStorage.getItem('SHENXIANYUN_POWER_START_TUN') === '1' &&
-        isTunModeAvailable
-      if (useTun) {
-        await patchVerge({ enable_tun_mode: true })
-      } else {
-        await toggleSystemProxy(true)
-      }
+      // 导入是配置交易，不再以节点延迟或实时联网结果作为提交门槛。
+      // 只要配置可被核心加载就先保留，并恢复导入前的接管方式。
+      await patchVerge({ enable_tun_mode: tunOn && isTunModeAvailable })
+      await toggleSystemProxy(systemProxyOn || systemProxyConfigOn)
       await invalidateProxyState()
       await refreshAll()
-
-      return {
-        candidateCount: candidateNames.length,
-        healthyCount: healthyNodes.length,
-        selectedName: selectedNode.name,
-      }
     } catch (error) {
       // 回滚事务会重新加载旧配置；这里先保证失败的新配置不再接管网络。
       await patchVerge({ enable_tun_mode: false }).catch(() => undefined)
@@ -3092,11 +2976,11 @@ const HomePage = () => {
           request.apiBase,
         )
         setCodeImportPhase('starting')
-        const health = await startImportedProfile(transaction.activate)
+        await startImportedProfile(transaction.activate)
         await transaction.commit()
         setCodeImportPhase('success')
         setCodeImportMessage(
-          `订阅已安全导入，已从 ${health.candidateCount} 个候选中检测到 ${health.healthyCount} 个可用节点${
+          `订阅已安全导入；节点当前是否在线不再阻止导入，可在节点恢复后连接${
             transaction.data.expires_at
               ? `，到期 ${transaction.data.expires_at}`
               : ''
@@ -3170,20 +3054,18 @@ const HomePage = () => {
     try {
       transaction = await activateCode(value, 3, updatePhase)
       updatePhase('starting')
-      const health = await startImportedProfile(transaction.activate)
+      await startImportedProfile(transaction.activate)
       await transaction.commit()
       setCode('')
       updatePhase('success')
       setCodeImportMessage(
-        `${isSwitchingCode ? '提取码已切换' : '订阅已导入'}，已从 ${
-          health.candidateCount
-        } 个候选中检测到 ${health.healthyCount} 个可用节点${
+        `${isSwitchingCode ? '提取码已切换' : '订阅已导入'}；节点当前是否在线不再阻止导入，可在节点恢复后连接${
           transaction.data.expires_at
             ? `，到期 ${transaction.data.expires_at}`
             : ''
         }`,
       )
-      setStatus('订阅已导入，网络连接正常')
+      setStatus('订阅已导入，可在节点恢复后连接')
     } catch (error) {
       let recoveryFailure = ''
       if (transaction) {
