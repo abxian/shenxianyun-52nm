@@ -71,6 +71,8 @@ jobs:
       - name: Checkout Repository
         if: github.event.inputs[matrix.input] == 'true'
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Validate Windows AI test kit
         if: matrix.id == 'windows' && github.event.inputs[matrix.input] == 'true'
