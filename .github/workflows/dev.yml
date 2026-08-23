@@ -77,10 +77,10 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $scriptText = Get-Content -Raw -Path 'scripts/windows-ai-test.ps1'
+          $scriptText = Get-Content -Raw -Encoding UTF8 -Path 'scripts/windows-ai-test.ps1'
           [scriptblock]::Create($scriptText) | Out-Null
 
-          $case = Get-Content -Raw -Path 'test-cases/windows-commercial.json' | ConvertFrom-Json
+          $case = Get-Content -Raw -Encoding UTF8 -Path 'test-cases/windows-commercial.json' | ConvertFrom-Json
           if ($case.triggerPhrase -ne '开始测试') {
             throw 'Unexpected trigger phrase.'
           }
@@ -96,7 +96,7 @@ jobs:
             throw 'Test case IDs must be unique.'
           }
 
-          $entry = Get-Content -Raw -Path 'WINDOWS-AI-TEST.md'
+          $entry = Get-Content -Raw -Encoding UTF8 -Path 'WINDOWS-AI-TEST.md'
           foreach ($requiredText in @('开始测试', '-Mode Run', '-Mode Build', '-Mode Record', '-Mode Publish')) {
             if (-not $entry.Contains($requiredText)) {
               throw "Missing entry contract: $requiredText"

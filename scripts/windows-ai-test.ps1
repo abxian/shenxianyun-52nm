@@ -23,7 +23,7 @@ function Write-JsonFile {
 
 function Read-JsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
-    return Get-Content -Raw -Path $Path | ConvertFrom-Json
+    return Get-Content -Raw -Encoding UTF8 -Path $Path | ConvertFrom-Json
 }
 
 function Get-EffectiveRunId {
@@ -31,7 +31,7 @@ function Get-EffectiveRunId {
         return $RunId
     }
     if (-not (Test-Path $LatestPath)) {
-        throw "没有找到测试运行。请先执行 -Mode Run。"
+        throw "No test run found. Execute -Mode Run first."
     }
     return (Get-Content -Raw -Path $LatestPath).Trim()
 }
@@ -40,7 +40,7 @@ function Get-RunDirectory {
     param([Parameter(Mandatory = $true)][string]$EffectiveRunId)
     $candidate = Join-Path $ResultsRoot $EffectiveRunId
     if (-not (Test-Path $candidate)) {
-        throw "测试运行不存在：$EffectiveRunId"
+        throw "Test run does not exist: $EffectiveRunId"
     }
     return $candidate
 }
@@ -48,7 +48,7 @@ function Get-RunDirectory {
 function Assert-CommandExists {
     param([Parameter(Mandatory = $true)][string]$Name)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        throw "缺少命令：$Name"
+        throw "Required command is missing: $Name"
     }
 }
 
@@ -62,7 +62,7 @@ function Assert-SafeText {
     )
     foreach ($pattern in $patterns) {
         if ($Text -match $pattern) {
-            throw "报告文本命中敏感信息规则，拒绝上传。请脱敏后重试。"
+            throw "Report text matches a sensitive-data rule. Redact it before retrying."
         }
     }
 }
@@ -133,13 +133,13 @@ function Get-ManualTemplate {
 
 Set-Location $RepoRoot
 if (-not (Test-Path $CasePath)) {
-    throw "测试用例不存在：$CasePath"
+    throw "Test case file does not exist: $CasePath"
 }
 $CaseSpec = Read-JsonFile -Path $CasePath
 
 if ($Mode -eq "Run") {
     if ($env:OS -ne "Windows_NT") {
-        throw "此测试执行器只允许在 Windows 上运行。"
+        throw "This test runner is restricted to Windows."
     }
     foreach ($requiredCommand in @("git", "node", "pnpm")) {
         Assert-CommandExists -Name $requiredCommand
@@ -147,15 +147,15 @@ if ($Mode -eq "Run") {
 
     $branch = (& git branch --show-current).Trim()
     if ($branch -ne $CaseSpec.targetBranch) {
-        throw "当前分支为 '$branch'，必须切换到 '$($CaseSpec.targetBranch)'。"
+        throw "Current branch is '$branch'; expected '$($CaseSpec.targetBranch)'."
     }
     & git merge-base --is-ancestor $CaseSpec.requiredAncestor HEAD
     if ($LASTEXITCODE -ne 0) {
-        throw "当前提交不包含要求的商业化候选基线 $($CaseSpec.requiredAncestor)。"
+        throw "Current commit does not contain required candidate baseline $($CaseSpec.requiredAncestor)."
     }
     $dirty = (& git status --porcelain --untracked-files=normal | Out-String).Trim()
     if ($dirty) {
-        throw "工作树不干净。请勿修改源码；先恢复或重新克隆仓库。"
+        throw "Working tree is dirty. Do not modify source; restore it or clone again."
     }
 
     New-Item -ItemType Directory -Force -Path $ResultsRoot | Out-Null
@@ -189,9 +189,9 @@ if ($Mode -eq "Run") {
         $automatedResults += Invoke-CapturedCommand -Id $check.id -Title $check.title -Executable $check.executable -Arguments @($check.arguments) -LogDirectory $logDirectory
     }
     Write-JsonFile -Value ([PSCustomObject]@{ results = $automatedResults }) -Path (Join-Path $runDirectory "automated-results.json")
-    Write-Host "`n自动测试结束。Run ID: $newRunId" -ForegroundColor Green
-    Write-Host "原始日志仅保存在本机忽略目录：.ai-test-results/$newRunId/raw-logs-local-only"
-    Write-Host "下一步：-Mode Build -RunId $newRunId"
+    Write-Host "`nAutomated checks completed. Run ID: $newRunId" -ForegroundColor Green
+    Write-Host "Raw logs remain local only: .ai-test-results/$newRunId/raw-logs-local-only"
+    Write-Host "Next: -Mode Build -RunId $newRunId"
     exit 0
 }
 
@@ -208,21 +208,21 @@ if ($Mode -eq "Build") {
     }
     & gh auth status | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        throw "GitHub CLI 尚未登录。请先执行 gh auth login。"
+        throw "GitHub CLI is not authenticated. Run gh auth login first."
     }
     if ($state.branch -ne $CaseSpec.targetBranch) {
-        throw "测试状态中的分支不符合用例目标。"
+        throw "The branch stored in test state does not match the test target."
     }
 
     $dispatchStarted = (Get-Date).ToUniversalTime().AddMinutes(-1)
     & gh workflow run $CaseSpec.developmentWorkflow --repo $CaseSpec.repository --ref $state.branch -f run_windows=true -f run_macos_aarch64=false -f run_windows_arm64=false -f run_linux_amd64=false
     if ($LASTEXITCODE -ne 0) {
-        throw "触发 Development Test 失败。"
+        throw "Failed to dispatch Development Test."
     }
     Start-Sleep -Seconds 6
     $runsJson = & gh run list --repo $CaseSpec.repository --workflow $CaseSpec.developmentWorkflow --branch $state.branch --event workflow_dispatch --limit 10 --json databaseId,createdAt,headSha,status,url
     if ($LASTEXITCODE -ne 0) {
-        throw "无法读取 Development Test 运行列表。"
+        throw "Failed to read Development Test runs."
     }
     $runs = @($runsJson | ConvertFrom-Json)
     $candidate = $runs |
@@ -230,7 +230,7 @@ if ($Mode -eq "Build") {
         Sort-Object { [DateTime]$_.createdAt } -Descending |
         Select-Object -First 1
     if (-not $candidate) {
-        throw "已触发工作流，但未找到与提交 $($state.commit) 匹配的运行。请稍后重试 -Mode Build。"
+        throw "Workflow dispatched, but no run matched commit $($state.commit). Retry -Mode Build shortly."
     }
 
     $state.actionsRunId = $candidate.databaseId
@@ -239,34 +239,34 @@ if ($Mode -eq "Build") {
     Write-Host "Development Test: $($candidate.url)" -ForegroundColor Cyan
     & gh run watch $candidate.databaseId --repo $CaseSpec.repository --exit-status
     if ($LASTEXITCODE -ne 0) {
-        throw "Development Test 未通过。保留 Actions URL 并将相关真机项目标记为 blocked。"
+        throw "Development Test failed. Keep the Actions URL and mark dependent manual cases blocked."
     }
     $installerDirectory = Join-Path $effectiveRunDirectory "windows-installer-local-only"
     New-Item -ItemType Directory -Force -Path $installerDirectory | Out-Null
     & gh run download $candidate.databaseId --repo $CaseSpec.repository --dir $installerDirectory
     if ($LASTEXITCODE -ne 0) {
-        throw "Actions 已通过，但下载 Windows 构件失败。"
+        throw "Actions passed, but the Windows artifact download failed."
     }
-    Write-Host "Windows 临时安装包已下载到：.ai-test-results/$effectiveRunId/windows-installer-local-only" -ForegroundColor Green
-    Write-Host "安装前确认这是备用机、虚拟机或可回滚环境。"
+    Write-Host "Temporary Windows installer: .ai-test-results/$effectiveRunId/windows-installer-local-only" -ForegroundColor Green
+    Write-Host "Before installation, confirm this is a spare, virtualized, or otherwise recoverable test environment."
     exit 0
 }
 
 if ($Mode -eq "Record") {
     if (-not $CaseId) {
-        throw "Record 模式必须提供 -CaseId。"
+        throw "Record mode requires -CaseId."
     }
     Assert-SafeText -Text "$Summary`n$Evidence"
     $manual = Read-JsonFile -Path $manualPath
     $target = @($manual.results) | Where-Object { $_.id -eq $CaseId } | Select-Object -First 1
     if (-not $target) {
-        throw "未知手工用例：$CaseId"
+        throw "Unknown manual case: $CaseId"
     }
     $target.status = $Status
     $target.summary = $Summary.Trim()
     $target.evidence = $Evidence.Trim()
     Write-JsonFile -Value $manual -Path $manualPath
-    Write-Host "已记录 $CaseId = $Status" -ForegroundColor Green
+    Write-Host "Recorded $CaseId = $Status" -ForegroundColor Green
     exit 0
 }
 
@@ -287,10 +287,10 @@ if ($Mode -eq "Publish") {
     Assert-CommandExists -Name "gh"
     & gh auth status | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        throw "GitHub CLI 尚未登录。请先执行 gh auth login。"
+        throw "GitHub CLI is not authenticated. Run gh auth login first."
     }
     if (-not (Test-Path $automatedPath)) {
-        throw "缺少自动测试结果。请先执行 -Mode Run。"
+        throw "Automated results are missing. Execute -Mode Run first."
     }
     $automated = Read-JsonFile -Path $automatedPath
     $manual = Read-JsonFile -Path $manualPath
@@ -306,7 +306,7 @@ if ($Mode -eq "Publish") {
 
     $bodyPath = Join-Path $effectiveRunDirectory "github-issue-body.md"
     $lines = @(
-        "## Windows AI 测试结果",
+        "## Windows AI test result",
         "",
         "- Verdict: **$verdict**",
         "- Run ID: ``$effectiveRunId``",
@@ -316,11 +316,11 @@ if ($Mode -eq "Publish") {
         "- OS: $(Escape-MarkdownCell $state.os)",
         "- Architecture: ``$($state.architecture)``",
         "- Node / pnpm: ``$($state.nodeVersion)`` / ``$($state.pnpmVersion)``",
-        "- Development Test: $(if ($state.actionsUrl) { $state.actionsUrl } else { '未运行' })",
+        "- Development Test: $(if ($state.actionsUrl) { $state.actionsUrl } else { 'not run' })",
         "",
-        "### 自动检查",
+        "### Automated checks",
         "",
-        "| ID | 检查 | 状态 | Exit | 秒 |",
+        "| ID | Check | Status | Exit | Seconds |",
         "|---|---|---:|---:|---:|"
     )
     foreach ($item in @($automated.results)) {
@@ -328,9 +328,9 @@ if ($Mode -eq "Publish") {
     }
     $lines += @(
         "",
-        "### Windows 真机检查",
+        "### Windows manual checks",
         "",
-        "| ID | 检查 | 状态 | 脱敏摘要 | 证据说明 |",
+        "| ID | Check | Status | Redacted summary | Evidence note |",
         "|---|---|---:|---|---|"
     )
     foreach ($item in @($manual.results)) {
@@ -338,11 +338,11 @@ if ($Mode -eq "Publish") {
     }
     $lines += @(
         "",
-        "### 安全声明",
+        "### Safety statement",
         "",
-        "- 原始日志和安装包仅保留在 Windows 本机的 ``.ai-test-results`` 忽略目录，未上传 GitHub。",
-        "- 报告不包含订阅 URL、导入码、Token、Cookie、密码、MachineGuid、用户名或私人路径。",
-        "- BLOCKED 表示前置条件不足，不得解释为通过。",
+        "- Raw logs and installers remain only in the local ignored ``.ai-test-results`` directory and were not uploaded.",
+        "- This report excludes subscription URLs, import codes, tokens, cookies, passwords, MachineGuid, usernames, and private paths.",
+        "- BLOCKED means prerequisites were unavailable and must not be interpreted as PASS.",
         "",
         "Generated by repository-native ``scripts/windows-ai-test.ps1``."
     )
@@ -351,9 +351,9 @@ if ($Mode -eq "Publish") {
     $title = "[Windows AI Test][$verdict] $shortCommit $effectiveRunId"
     $issueUrl = & gh issue create --repo $CaseSpec.repository --title $title --body-file $bodyPath
     if ($LASTEXITCODE -ne 0) {
-        throw "创建 GitHub Issue 失败。"
+        throw "Failed to create the GitHub Issue."
     }
-    Write-Host "测试结果已上传：$issueUrl" -ForegroundColor Green
-    Write-Host "请把 Issue URL 和 Development Test URL 发送给主审阅任务。"
+    Write-Host "Test result uploaded: $issueUrl" -ForegroundColor Green
+    Write-Host "Send the Issue URL and Development Test URL to the primary review task."
     exit 0
 }
