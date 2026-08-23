@@ -72,6 +72,39 @@ jobs:
         if: github.event.inputs[matrix.input] == 'true'
         uses: actions/checkout@v6
 
+      - name: Validate Windows AI test kit
+        if: matrix.id == 'windows' && github.event.inputs[matrix.input] == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptText = Get-Content -Raw -Path 'scripts/windows-ai-test.ps1'
+          [scriptblock]::Create($scriptText) | Out-Null
+
+          $case = Get-Content -Raw -Path 'test-cases/windows-commercial.json' | ConvertFrom-Json
+          if ($case.triggerPhrase -ne '开始测试') {
+            throw 'Unexpected trigger phrase.'
+          }
+          if ($case.targetBranch -ne 'codex/commercial-canary-20260824') {
+            throw 'Unexpected target branch.'
+          }
+          if (@($case.automatedChecks).Count -lt 10 -or @($case.manualChecks).Count -lt 10) {
+            throw 'Windows AI test matrix is incomplete.'
+          }
+
+          $ids = @($case.automatedChecks.id) + @($case.manualChecks.id)
+          if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) {
+            throw 'Test case IDs must be unique.'
+          }
+
+          $entry = Get-Content -Raw -Path 'WINDOWS-AI-TEST.md'
+          foreach ($requiredText in @('开始测试', '-Mode Run', '-Mode Build', '-Mode Record', '-Mode Publish')) {
+            if (-not $entry.Contains($requiredText)) {
+              throw "Missing entry contract: $requiredText"
+            }
+          }
+
+          Write-Host 'Windows AI test kit contract is valid.'
+
       - name: Install Rust Stable
         if: github.event.inputs[matrix.input] == 'true'
         uses: dtolnay/rust-toolchain@1.95.0
