@@ -1,0 +1,48 @@
+name: Windows AI 测试结果
+description: 提交仓库原生 Windows AI 验收器生成的脱敏结果
+title: "[Windows AI Test] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        优先使用 `scripts/windows-ai-test.ps1 -Mode Publish` 自动创建本 Issue。
+        禁止上传原始日志、订阅 URL、Token、Cookie、密码、MachineGuid 或用户数据。
+  - type: input
+    id: commit
+    attributes:
+      label: 测试提交
+      placeholder: 40 位 Git commit
+    validations:
+      required: true
+  - type: input
+    id: actions
+    attributes:
+      label: Development Test URL
+      placeholder: https://github.com/abxian/shenxianyun-52nm/actions/runs/...
+    validations:
+      required: false
+  - type: dropdown
+    id: verdict
+    attributes:
+      label: 结论
+      options:
+        - PASS
+        - FAIL
+        - BLOCKED
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 结构化脱敏结果
+      description: 建议直接粘贴执行器生成的 Markdown，不要粘贴原始日志。
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全确认
+      options:
+        - label: 我确认没有上传凭据、原始设备标识、用户目录、订阅地址或用户数据。
+          required: true

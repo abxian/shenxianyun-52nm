@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "caseVersion": "2026-08-24.1",
+  "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
+  "triggerPhrase": "开始测试",
+  "repository": "abxian/shenxianyun-52nm",
+  "targetBranch": "codex/commercial-canary-20260824",
+  "requiredAncestor": "bd349701457c37473438b58e7d7d6b301f14577c",
+  "developmentWorkflow": "dev.yml",
+  "automatedChecks": [
+    {
+      "id": "AUTO-INSTALL",
+      "title": "安装锁定依赖",
+      "executable": "pnpm",
+      "arguments": ["install", "--frozen-lockfile"]
+    },
+    {
+      "id": "AUTO-TYPECHECK",
+      "title": "TypeScript 类型检查",
+      "executable": "pnpm",
+      "arguments": ["typecheck"]
+    },
+    {
+      "id": "AUTO-FORMAT",
+      "title": "格式检查",
+      "executable": "pnpm",
+      "arguments": ["format:check"]
+    },
+    {
+      "id": "AUTO-LINT",
+      "title": "ESLint 检查",
+      "executable": "pnpm",
+      "arguments": ["lint"]
+    },
+    {
+      "id": "AUTO-TRAFFIC",
+      "title": "托管流量幂等计数测试",
+      "executable": "pnpm",
+      "arguments": ["test:managed-traffic"]
+    },
+    {
+      "id": "AUTO-IMPORT",
+      "title": "安全导入与节点健康测试",
+      "executable": "pnpm",
+      "arguments": ["test:import-health"]
+    },
+    {
+      "id": "AUTO-REFRESH",
+      "title": "订阅刷新策略测试",
+      "executable": "pnpm",
+      "arguments": ["test:subscription-refresh"]
+    },
+    {
+      "id": "AUTO-UPDATER",
+      "title": "更新平台隔离测试",
+      "executable": "pnpm",
+      "arguments": ["test:updater-platforms"]
+    },
+    {
+      "id": "AUTO-BRAND",
+      "title": "52nm 品牌与端点测试",
+      "executable": "pnpm",
+      "arguments": ["brand:test"]
+    },
+    {
+      "id": "AUTO-DIFF",
+      "title": "Git 补丁空白错误检查",
+      "executable": "git",
+      "arguments": ["diff", "--check"]
+    }
+  ],
+  "manualChecks": [
+    {
+      "id": "WIN-INSTALL-001",
+      "title": "临时安装包安装与首次启动",
+      "risk": "medium",
+      "requires": [
+        "Development Test Windows x64 构件",
+        "备用 Windows、虚拟机或 Windows Sandbox"
+      ],
+      "steps": [
+        "确认没有正在运行的日常生产客户端",
+        "安装本次 Actions 生成的 x64 EXE",
+        "启动应用并观察至少 60 秒"
+      ],
+      "expected": "安装完成；应用无白屏、闪退或循环报错。",
+      "rollback": "退出并卸载测试客户端；如系统代理残留，在 Windows 设置中关闭手动代理。"
+    },
+    {
+      "id": "WIN-BRAND-001",
+      "title": "52nm 品牌与更新通道隔离",
+      "risk": "low",
+      "requires": ["应用已启动"],
+      "steps": [
+        "检查应用名称和图标",
+        "检查关于或更新界面未指向旧神仙云发布通道"
+      ],
+      "expected": "界面品牌为吾爱云，更新通道保持 52nm 仓库隔离。",
+      "rollback": "无。"
+    },
+    {
+      "id": "WIN-IMPORT-001",
+      "title": "测试账号安全导入",
+      "risk": "medium",
+      "requires": ["运行时安全提供的专用测试账号或导入码"],
+      "steps": [
+        "在界面中输入测试导入信息",
+        "等待节点列表加载",
+        "确认截图和摘要不包含订阅地址或凭据"
+      ],
+      "expected": "导入成功且节点列表可见；不产生重复配置。",
+      "rollback": "删除测试配置；不得上传订阅 URL、Token、Cookie 或导入码。"
+    },
+    {
+      "id": "WIN-CONNECT-001",
+      "title": "节点连接、切换与基础联网",
+      "risk": "medium",
+      "requires": ["已导入测试账号"],
+      "steps": [
+        "连接一个测试节点",
+        "访问普通测试网页",
+        "切换另一个节点并再次访问"
+      ],
+      "expected": "两个节点均可连接，切换后网络恢复，无持续代理残留。",
+      "rollback": "退出客户端并在 Windows 设置中关闭手动代理。"
+    },
+    {
+      "id": "WIN-REFRESH-001",
+      "title": "订阅手动刷新",
+      "risk": "low",
+      "requires": ["已导入测试账号"],
+      "steps": ["手动刷新订阅", "检查节点和配置数量"],
+      "expected": "刷新成功，不重复创建配置；失败时有明确提示。",
+      "rollback": "无。"
+    },
+    {
+      "id": "WIN-TRAFFIC-001",
+      "title": "上下行流量增长与服务端统计",
+      "risk": "medium",
+      "requires": [
+        "连接测试节点",
+        "52nm 商业化后端已灰度时才可验收服务端归一统计"
+      ],
+      "steps": [
+        "产生少量可控上行和下行流量",
+        "检查客户端累计流量增长",
+        "后端已灰度时检查后台设备和上下行统计"
+      ],
+      "expected": "客户端上下行累计增长；后端已灰度时同一物理设备只占一个统一设备名额。",
+      "rollback": "停止测试流量并断开节点；后端未灰度时将服务端部分标为 blocked。"
+    },
+    {
+      "id": "WIN-RESTART-001",
+      "title": "退出重启后的配置与累计状态",
+      "risk": "low",
+      "requires": ["已完成一次连接和流量测试"],
+      "steps": ["正常退出客户端", "重新启动", "检查配置、连接选择和累计状态"],
+      "expected": "配置未异常丢失，累计流量不倒退或重复跳增。",
+      "rollback": "无。"
+    },
+    {
+      "id": "WIN-RECONNECT-001",
+      "title": "断网重连与心跳恢复",
+      "risk": "medium",
+      "requires": ["已连接测试节点"],
+      "steps": [
+        "短暂断开 Windows 网络",
+        "恢复网络",
+        "等待客户端恢复并再次访问测试网页"
+      ],
+      "expected": "恢复后可继续连接，不批量重放历史心跳。",
+      "rollback": "恢复网络，退出客户端并关闭 Windows 手动代理。"
+    },
+    {
+      "id": "WIN-PROXY-ROLLBACK-001",
+      "title": "退出后的系统代理恢复",
+      "risk": "medium",
+      "requires": ["曾开启系统代理"],
+      "steps": [
+        "正常退出客户端",
+        "检查 Windows 网络和 Internet 的代理设置",
+        "不通过客户端访问普通网页"
+      ],
+      "expected": "系统代理恢复，退出客户端后不阻断正常网络。",
+      "rollback": "在 Windows 设置中关闭手动代理并记录失败。"
+    },
+    {
+      "id": "WIN-REINSTALL-ID-001",
+      "title": "重装后的统一设备身份",
+      "risk": "high",
+      "requires": [
+        "专用测试虚拟机或可回滚快照",
+        "52nm 商业化后端已灰度",
+        "同一个专用测试账号"
+      ],
+      "steps": [
+        "记录后台脱敏设备记录和名额数",
+        "卸载并重装同一候选构件",
+        "重新导入同一测试账号",
+        "复核后台统一设备记录"
+      ],
+      "expected": "安装实例可变化，但 canonical device 不新增物理设备名额。",
+      "rollback": "恢复虚拟机快照或卸载测试客户端；任一前置条件缺失时标为 blocked，不得在日常生产电脑强行执行。"
+    }
+  ],
+  "prohibitedEvidence": [
+    "订阅 URL 或导入码",
+    "Token、Cookie、Authorization 头、密码和密钥",
+    "Windows MachineGuid 或其他原始设备标识",
+    "用户名、主机名、用户目录和私人文件路径",
+    "未脱敏的账号、用户数据、公网或内网业务地址"
+  ]
+}

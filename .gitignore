@@ -13,6 +13,7 @@ scripts/_env.sh
 .eslintcache
 .changelog_backups
 target
+.ai-test-results/
 CLAUDE.md
 .vfox.toml
 .vfox/

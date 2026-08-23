@@ -1,0 +1,56 @@
+name: Windows AI Test Kit Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'WINDOWS-AI-TEST.md'
+      - 'test-cases/windows-commercial.json'
+      - 'scripts/windows-ai-test.ps1'
+      - '.github/ISSUE_TEMPLATE/windows_ai_test.yml'
+      - '.github/workflows/windows-ai-test-kit-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate PowerShell and test case contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptText = Get-Content -Raw -Path 'scripts/windows-ai-test.ps1'
+          [scriptblock]::Create($scriptText) | Out-Null
+
+          $case = Get-Content -Raw -Path 'test-cases/windows-commercial.json' | ConvertFrom-Json
+          if ($case.triggerPhrase -ne '开始测试') {
+            throw 'Unexpected trigger phrase.'
+          }
+          if ($case.targetBranch -ne 'codex/commercial-canary-20260824') {
+            throw 'Unexpected target branch.'
+          }
+          if (@($case.automatedChecks).Count -lt 10) {
+            throw 'Automated test matrix is incomplete.'
+          }
+          if (@($case.manualChecks).Count -lt 10) {
+            throw 'Manual Windows test matrix is incomplete.'
+          }
+
+          $ids = @($case.automatedChecks.id) + @($case.manualChecks.id)
+          if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) {
+            throw 'Test case IDs must be unique.'
+          }
+
+          $entry = Get-Content -Raw -Path 'WINDOWS-AI-TEST.md'
+          foreach ($requiredText in @('开始测试', '-Mode Run', '-Mode Build', '-Mode Record', '-Mode Publish')) {
+            if (-not $entry.Contains($requiredText)) {
+              throw "Missing entry contract: $requiredText"
+            }
+          }
+
+          Write-Host 'Windows AI test kit contract is valid.'

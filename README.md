@@ -100,6 +100,7 @@ does not consume the original Shenxianyun update channel.
 - For changes that are not ready to publish, push an isolated branch, manually run `Frontend Check` and `Clippy Lint`, then use `Development Test` (`.github/workflows/dev.yml`) for full cross-platform compilation and packaging against that branch. Do not change the version, create a tag/Release, or update Dufs/updater metadata merely to validate a build.
 - A workflow artifact is a temporary build result, not a published client. Publishing remains a separate, explicitly authorized step.
 - The release workflow is tag-only. Do not create a `v*` tag unless a new version has been approved.
+- Windows AI 真机验收统一从 [`WINDOWS-AI-TEST.md`](./WINDOWS-AI-TEST.md) 进入；测试代理只有在收到“开始测试”后才能运行仓库自带用例，并通过脱敏 GitHub Issue 回传结果。
 
 ### Managed client heartbeat
 
