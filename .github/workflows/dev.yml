@@ -149,6 +149,11 @@ jobs:
             pnpm-shared-stable-${{ matrix.os }}-${{ matrix.target }}
           lookup-only: true
 
+      - name: Run repository-native Windows AI automated checks
+        if: matrix.id == 'windows' && github.event.inputs[matrix.input] == 'true'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-ai-test.ps1 -Mode Run
+
       - name: Pnpm install and check
         if: github.event.inputs[matrix.input] == 'true'
         run: |

@@ -87,7 +87,14 @@ function Invoke-CapturedCommand {
     $logPath = Join-Path $LogDirectory "$safeId.log"
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $exitCode = 1
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        # Windows PowerShell 5.1 wraps native stderr as ErrorRecord objects.
+        # With the script-wide Stop policy, an otherwise successful native
+        # command can jump into catch before LASTEXITCODE is collected. Keep
+        # native output non-terminating inside this narrow invocation scope and
+        # use the process exit code as the authoritative result.
+        $ErrorActionPreference = "Continue"
         & $Executable @Arguments 2>&1 | Tee-Object -FilePath $logPath | Out-Host
         $exitCode = $LASTEXITCODE
         if ($null -eq $exitCode) {
@@ -99,6 +106,7 @@ function Invoke-CapturedCommand {
         $exitCode = 1
     }
     finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         $stopwatch.Stop()
     }
     return [PSCustomObject]@{
