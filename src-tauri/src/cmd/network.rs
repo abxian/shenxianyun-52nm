@@ -7,6 +7,7 @@ use network_interface::NetworkInterface;
 use serde_yaml_ng::Mapping;
 use sha2::{Digest, Sha256};
 use std::net::TcpListener;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 use sysproxy::{Autoproxy, Sysproxy};
 use tauri_plugin_clash_verge_sysinfo;
