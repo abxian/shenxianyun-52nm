@@ -147,6 +147,7 @@ mod app_init {
             cmd::get_portable_flag,
             cmd::get_network_interfaces,
             cmd::get_system_hostname,
+            cmd::get_stable_device_key,
             cmd::restart_app,
             cmd::factory_reset_app,
             cmd::start_core,

@@ -476,6 +476,10 @@ export async function getSystemHostname() {
   return invoke<string>('get_system_hostname')
 }
 
+export async function getStableDeviceKey() {
+  return invoke<string | null>('get_stable_device_key')
+}
+
 export async function getNetworkInterfacesInfo() {
   return invoke<INetworkInterface[]>('get_network_interfaces_info')
 }

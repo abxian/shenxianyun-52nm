@@ -196,6 +196,26 @@ Action 跑完后到本仓库 Release `v<版本号>` 页面下载（`<ver>` 为�
 Dufs，也不得修改旧客户端仓库的 Release。若以后建立 52nm 独立下载站，必须
 先在 NAS 笔记记录独立域名、存储、凭据和回滚方案，再单独增加发布步骤。
 
+### 商业化设备身份与流量口径（2026-08-24）
+
+- `client_id` 是安装实例 ID，升级保留；重装后允许变化。
+- 安全导入时由 Rust 在本机读取系统级设备号并立即做 SHA-256，只把 `pc-...` 伪匿名键交给 WebView 和服务端。Windows 使用 MachineGuid、macOS 使用 IOPlatformUUID、Linux 使用 machine-id；原始值不得进入日志或网络。
+- 系统标识读取失败时回退到现有安装实例 ID，不阻断客户导入。服务端再做 HMAC，并用 `canonical_device_id` 归一重装前后的设备名额。
+- 流量继续使用 Mihomo 原始累计上/下行字节和持久化幂等计数器；服务端未确认前不得推进基线。
+
+候选分支提交前至少执行：
+
+```bash
+pnpm typecheck
+pnpm test:managed-traffic
+pnpm test:import-health
+pnpm test:subscription-refresh
+pnpm test:updater-platforms
+pnpm brand:test
+```
+
+Rust 测试/构建要求 sidecar 产物已准备；本机缺少 sidecar 时，使用仓库 GitHub Actions 的全平台构建作为正式编译门禁。任何身份冲突均应由服务端拒绝并人工核对，不得按 IP、主机名或 UA 自动合并。
+
 ### 五、流程速记（每次发布都照做）
 
 1. 改代码 → **同步改 4 处版本号**。

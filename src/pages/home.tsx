@@ -86,6 +86,7 @@ import {
   factoryResetApp,
   getProfiles,
   getServiceDiagnostics,
+  getStableDeviceKey,
   getSystemProxy,
   importProfile,
   installService,
@@ -1077,6 +1078,7 @@ const HomePage = () => {
 
   const exchangeImportTicket = useCallback(
     async (request: ManagedImportRequest) => {
+      const deviceKey = await getStableDeviceKey().catch(() => null)
       const response = await apiFetch(
         `${request.apiBase}/api/import/exchange`,
         {
@@ -1091,6 +1093,7 @@ const HomePage = () => {
           body: JSON.stringify({
             ticket: request.ticket,
             client_id: getClientId(),
+            device_key: deviceKey || getClientId(),
             platform: DESKTOP_PLATFORM,
           }),
         },
