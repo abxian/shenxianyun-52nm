@@ -81,3 +81,7 @@ jobs:
       - name: Run subscription refresh policy tests
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm test:subscription-refresh
+
+      - name: Run managed subscription presentation tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm test:managed-subscription

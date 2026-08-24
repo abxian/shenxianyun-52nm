@@ -122,6 +122,7 @@ import {
   extractTicketFromLaunchUrl,
   hashManagedContent,
   loadManagedAuth,
+  managedProfileName,
   saveManagedAuth,
   takeManagedImportRequest,
   type ManagedAuth,
@@ -1287,7 +1288,7 @@ const HomePage = () => {
         await createProfile(
           {
             type: 'local',
-            name: input,
+            name: managedProfileName(getRuntimeBrand().client_name),
             desc: '受保护的提取码订阅；地址仅由客户端安全保存',
             url: '',
             option: {
@@ -1404,6 +1405,19 @@ const HomePage = () => {
         if (managedAuthRef.current === null) {
           managedAuthRef.current = auth
         }
+        if (!auth) return
+        void (async () => {
+          const profileName = managedProfileName(getRuntimeBrand().client_name)
+          const list = await getProfiles()
+          const profile = list.items?.find(
+            (item) => item.uid === auth.profileUid,
+          )
+          if (!profile || profile.name === profileName) return
+          await patchProfile(auth.profileUid, { name: profileName })
+          await mutateProfiles()
+        })().catch(() => {
+          setStatus('官方订阅名称安全迁移未完成，请重启后重试')
+        })
       })
       .catch(() => {
         if (managedAuthRef.current === null) {
@@ -1411,7 +1425,7 @@ const HomePage = () => {
         }
       })
       .finally(() => setManagedAuthReady(true))
-  }, [])
+  }, [mutateProfiles])
 
   const verifyCode = useCallback(
     async (input: string, countImport = true): Promise<ValidVerifyResponse> => {

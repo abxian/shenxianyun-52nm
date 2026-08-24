@@ -1,4 +1,8 @@
-use crate::{config::Config, singleton, utils::dirs};
+use crate::{
+    config::Config,
+    singleton,
+    utils::{brand, dirs},
+};
 use anyhow::Result;
 use chrono::Utc;
 use clash_verge_logging::{Type, logging};
@@ -294,8 +298,12 @@ impl SilentUpdater {
     async fn ask_user_to_install(app_handle: &tauri::AppHandle, version: &str) -> bool {
         use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons, MessageDialogKind};
 
-        let title = clash_verge_i18n::t!("notifications.updateReady.title");
-        let body = clash_verge_i18n::t!("notifications.updateReady.body").replace("{version}", version);
+        let app_name = &app_handle.package_info().name;
+        let title = brand::native_text(&clash_verge_i18n::t!("notifications.updateReady.title"), app_name);
+        let body = brand::native_text(
+            &clash_verge_i18n::t!("notifications.updateReady.body").replace("{version}", version),
+            app_name,
+        );
         let install_now = clash_verge_i18n::t!("notifications.updateReady.installNow").into_owned();
         let later = clash_verge_i18n::t!("notifications.updateReady.later").into_owned();
 
@@ -324,8 +332,9 @@ impl SilentUpdater {
     fn show_update_splash(app_handle: &tauri::AppHandle, version: &str) {
         use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+        let title = brand::native_text("Clash Verge - Updating", &app_handle.package_info().name);
         let window = match WebviewWindowBuilder::new(app_handle, "update-splash", WebviewUrl::App("index.html".into()))
-            .title("Clash Verge - Updating")
+            .title(title)
             .inner_size(300.0, 180.0)
             .resizable(false)
             .maximizable(false)

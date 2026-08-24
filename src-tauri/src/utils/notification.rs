@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::core::handle;
+use crate::{core::handle, utils::brand};
 use clash_verge_i18n;
 use tauri_plugin_notification::NotificationExt as _;
 
@@ -20,7 +20,14 @@ pub enum NotificationEvent<'a> {
 
 fn notify(title: Cow<'_, str>, body: Cow<'_, str>) {
     let app_handle = handle::Handle::app_handle();
-    app_handle.notification().builder().title(title).body(body).show().ok();
+    let app_name = &app_handle.package_info().name;
+    app_handle
+        .notification()
+        .builder()
+        .title(brand::native_text(&title, app_name))
+        .body(brand::native_text(&body, app_name))
+        .show()
+        .ok();
 }
 
 pub async fn notify_event<'a>(event: NotificationEvent<'a>) {

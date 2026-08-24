@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use crate::utils::brand;
 use crate::{
     config::{Config, IClashTemp},
     core::{logger::Logger, tray::Tray},
@@ -251,7 +253,10 @@ fn uninstall_service() -> Result<()> {
 
     // clash_verge_i18n::sync_locale(Config::verge().await.latest_arc().language.as_deref());
 
-    let prompt = clash_verge_i18n::t!("service.adminUninstallPrompt");
+    let prompt = brand::native_text(
+        &clash_verge_i18n::t!("service.adminUninstallPrompt"),
+        &crate::core::handle::Handle::app_handle().package_info().name,
+    );
     let command =
         format!(r#"do shell script "sudo '{uninstall_shell}'" with administrator privileges with prompt "{prompt}""#);
 
@@ -285,7 +290,10 @@ fn install_service() -> Result<()> {
     // clash_verge_i18n::sync_locale(Config::verge().await.latest_arc().language.as_deref());
 
     let gid = tauri_plugin_clash_verge_sysinfo::current_gid();
-    let prompt = clash_verge_i18n::t!("service.adminInstallPrompt");
+    let prompt = brand::native_text(
+        &clash_verge_i18n::t!("service.adminInstallPrompt"),
+        &crate::core::handle::Handle::app_handle().package_info().name,
+    );
     let command = format!(
         r#"do shell script "sudo CLASH_VERGE_SERVICE_GID={gid} '{install_shell}'" with administrator privileges with prompt "{prompt}""#
     );
@@ -372,7 +380,7 @@ pub(super) async fn start_with_existing_service(config_file: &PathBuf) -> Result
 
     let response = clash_verge_service_ipc::start_clash(&payload)
         .await
-        .context("无法连接到Clash Verge Service")?;
+        .context("无法连接到客户端核心服务")?;
 
     if response.code > 0 {
         let err_msg = response.message;
@@ -399,7 +407,7 @@ pub(super) async fn get_clash_logs_by_service() -> Result<Vec<CompactString>> {
 
     let response = clash_verge_service_ipc::get_clash_logs()
         .await
-        .context("无法连接到Clash Verge Service")?;
+        .context("无法连接到客户端核心服务")?;
 
     if response.code > 0 {
         let err_msg = response.message;
@@ -417,7 +425,7 @@ pub(super) async fn stop_core_by_service() -> Result<()> {
 
     let response = clash_verge_service_ipc::stop_clash()
         .await
-        .context("无法连接到Clash Verge Service")?;
+        .context("无法连接到客户端核心服务")?;
 
     if response.code > 0 {
         let err_msg = response.message;

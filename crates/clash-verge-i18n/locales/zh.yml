@@ -64,4 +64,3 @@ tray:
   tooltip:
     systemProxy: 系统代理
     tun: TUN
-    profile: 订阅

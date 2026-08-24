@@ -64,4 +64,3 @@ tray:
   tooltip:
     systemProxy: 시스템 프록시
     tun: TUN
-    profile: 프로필

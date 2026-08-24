@@ -38,6 +38,12 @@ use menu_def::{MenuIds, MenuTexts};
 
 type ProxyMenuItem = (Option<Submenu<Wry>>, Vec<Box<dyn IsMenuItem<Wry>>>);
 
+struct TrayProfileMenu<'a> {
+    profiles: Vec<IProfilePreview<'a>>,
+    managed_profile_uid: Option<&'a str>,
+    mask_all_profile_names: bool,
+}
+
 const TRAY_CLICK_DEBOUNCE_MS: u64 = 300;
 pub const TRAY_ID: &str = "clash-verge-rev-tray";
 
@@ -213,7 +219,25 @@ impl Tray {
         let profiles_config = Config::profiles().await;
         let profiles_arc = profiles_config.latest_arc();
         let profiles_preview = profiles_arc.profiles_preview().unwrap_or_default();
+        let (managed_profile_uid, mask_all_profile_names) = match cmd::load_managed_auth() {
+            Ok(Some(auth)) => (Some(auth.profile_uid), false),
+            Ok(None) => (None, false),
+            Err(error) => {
+                logging!(
+                    warn,
+                    Type::Tray,
+                    "受管订阅凭据不可用，托盘配置名称将全部隐藏: {}",
+                    error
+                );
+                (None, true)
+            }
+        };
         let is_lightweight_mode = is_in_lightweight_mode();
+        let profile_menu = TrayProfileMenu {
+            profiles: profiles_preview,
+            managed_profile_uid: managed_profile_uid.as_deref(),
+            mask_all_profile_names,
+        };
 
         logging_error!(
             Type::Tray,
@@ -224,7 +248,7 @@ impl Tray {
                     *system_proxy,
                     *tun_mode,
                     tun_mode_available,
-                    profiles_preview,
+                    profile_menu,
                     is_lightweight_mode,
                 )
                 .await?,
@@ -282,24 +306,9 @@ impl Tray {
             if flag { "on" } else { "off" }
         };
 
-        let mut current_profile_name = "None".into();
-        {
-            let profiles = Config::profiles().await;
-            let profiles = profiles.latest_arc();
-            if let Some(current_profile_uid) = profiles.get_current()
-                && let Ok(profile) = profiles.get_item(current_profile_uid)
-            {
-                current_profile_name = match &profile.name {
-                    Some(profile_name) => profile_name.to_string(),
-                    None => current_profile_name,
-                };
-            }
-        }
-
         // Get localized strings before using them
         let sys_proxy_text = clash_verge_i18n::t!("tray.tooltip.systemProxy");
         let tun_text = clash_verge_i18n::t!("tray.tooltip.tun");
-        let profile_text = clash_verge_i18n::t!("tray.tooltip.profile");
 
         let v = env!("CARGO_PKG_VERSION");
         let reassembled_version = v.split_once('+').map_or_else(
@@ -307,15 +316,13 @@ impl Tray {
             |(main, rest)| format!("{main}+{}", rest.split('.').next().unwrap_or("")),
         );
 
-        let tooltip = format!(
-            "Clash Verge {}\n{}: {}\n{}: {}\n{}: {}",
+        let tooltip = build_tray_tooltip(
+            &app_handle.package_info().name,
             reassembled_version,
-            sys_proxy_text,
+            &sys_proxy_text,
+            &tun_text,
             switch_str(system_proxy),
-            tun_text,
             switch_str(tun_mode),
-            profile_text,
-            current_profile_name
         );
 
         let Some(tray) = app_handle.tray_by_id(TRAY_ID) else {
@@ -427,17 +434,52 @@ fn create_hotkeys(hotkeys: &Option<Vec<String>>) -> HashMap<&str, &str> {
         .unwrap_or_default()
 }
 
+fn build_tray_tooltip(
+    app_name: &str,
+    version: impl std::fmt::Display,
+    system_proxy_text: &str,
+    tun_text: &str,
+    system_proxy_state: &str,
+    tun_state: &str,
+) -> std::string::String {
+    format!("{app_name} {version}\n{system_proxy_text}: {system_proxy_state}\n{tun_text}: {tun_state}")
+}
+
+fn tray_profile_label(
+    profile_uid: &str,
+    profile_name: &str,
+    managed_profile_uid: Option<&str>,
+    mask_all_profile_names: bool,
+    app_name: &str,
+) -> std::string::String {
+    if mask_all_profile_names || managed_profile_uid == Some(profile_uid) {
+        format!("{app_name} 官方订阅")
+    } else {
+        profile_name.to_owned()
+    }
+}
+
 fn create_profile_menu_item(
     app_handle: &AppHandle,
     profiles_preview: Vec<IProfilePreview<'_>>,
+    managed_profile_uid: Option<&str>,
+    mask_all_profile_names: bool,
 ) -> Result<Vec<CheckMenuItem<Wry>>> {
+    let app_name = &app_handle.package_info().name;
     profiles_preview
         .into_iter()
         .map(|profile| {
+            let display_name = tray_profile_label(
+                profile.uid,
+                profile.name,
+                managed_profile_uid,
+                mask_all_profile_names,
+                app_name,
+            );
             CheckMenuItem::with_id(
                 app_handle,
                 format!("profiles_{}", profile.uid),
-                profile.name,
+                display_name,
                 true,
                 profile.is_current,
                 None::<&str>,
@@ -585,7 +627,7 @@ async fn create_tray_menu(
     system_proxy_enabled: bool,
     tun_mode_enabled: bool,
     tun_mode_available: bool,
-    profiles_preview: Vec<IProfilePreview<'_>>,
+    profile_menu: TrayProfileMenu<'_>,
     is_lightweight_mode: bool,
 ) -> Result<tauri::menu::Menu<Wry>> {
     let current_proxy_mode = mode.unwrap_or("");
@@ -644,7 +686,12 @@ async fn create_tray_menu(
 
     let hotkeys = create_hotkeys(&verge_settings.hotkeys);
 
-    let profile_menu_items: Vec<CheckMenuItem<Wry>> = create_profile_menu_item(app_handle, profiles_preview)?;
+    let profile_menu_items: Vec<CheckMenuItem<Wry>> = create_profile_menu_item(
+        app_handle,
+        profile_menu.profiles,
+        profile_menu.managed_profile_uid,
+        profile_menu.mask_all_profile_names,
+    )?;
 
     // Pre-fetch all localized strings
     let texts = MenuTexts::new();
@@ -1001,4 +1048,42 @@ fn on_menu_event(_: &AppHandle, event: MenuEvent) {
         // We dont expected to refresh tray state here
         // as the inner handle function (SHOULD) already takes care of it
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_tray_tooltip, tray_profile_label};
+
+    #[test]
+    fn tooltip_uses_product_name_and_never_includes_a_profile_name() {
+        let extraction_code = "never-show-this-code";
+        let tooltip = build_tray_tooltip("吾爱云", "2.5.34", "系统代理", "虚拟网卡", "on", "off");
+
+        assert!(tooltip.starts_with("吾爱云 2.5.34"));
+        assert!(!tooltip.contains("Clash Verge"));
+        assert!(!tooltip.contains(extraction_code));
+        assert_eq!(tooltip.lines().count(), 3);
+    }
+
+    #[test]
+    fn managed_profile_menu_hides_the_persisted_extraction_code() {
+        let label = tray_profile_label(
+            "managed-uid",
+            "never-show-this-code",
+            Some("managed-uid"),
+            false,
+            "吾爱云",
+        );
+
+        assert_eq!(label, "吾爱云 官方订阅");
+        assert!(!label.contains("never-show-this-code"));
+    }
+
+    #[test]
+    fn unmanaged_profile_names_remain_usable() {
+        assert_eq!(
+            tray_profile_label("local-uid", "家庭网络", Some("managed-uid"), false, "吾爱云"),
+            "家庭网络"
+        );
+    }
 }

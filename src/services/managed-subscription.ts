@@ -30,6 +30,11 @@ export const saveManagedAuth = (auth: ManagedAuth) =>
 
 export const clearManagedAuth = () => invoke<void>('clear_managed_auth')
 
+export const managedProfileName = (clientName: string) => {
+  const normalized = clientName.trim().slice(0, 80)
+  return `${normalized || '官方客户端'} 官方订阅`
+}
+
 export const hashManagedContent = async (content: string) => {
   const bytes = new TextEncoder().encode(content)
   const digest = await crypto.subtle.digest('SHA-256', bytes)
