@@ -34,6 +34,7 @@
       "!src-tauri/target",
       "!src-tauri/gen",
       "!target",
+      "!.ai-test-results",
       "!Cargo.lock",
       "!pnpm-lock.yaml",
       "!README.md",

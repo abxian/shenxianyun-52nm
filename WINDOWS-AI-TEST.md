@@ -66,7 +66,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 脚本会输出 `Run ID`。记住该值；不填写 `-RunId` 时，后续命令默认使用最近一次运行。
 自动阶段会执行锁定依赖安装、类型、格式、Lint、流量、导入、刷新、更新通道、品牌和
-Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵。
+Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵，但执行器最终返回非零；
+此时必须停止 Build/真机步骤并把该轮作为 FAIL，不能继续生成 PASS。
 
 ### B. 构建并下载 Windows x64 临时安装包
 
@@ -108,6 +109,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 确认序号，不含提取码、Token、URL、设备标识或流量值。Issue 只写
 `scheduled/attempting/acknowledged/retrying`、确认序号是否推进和脱敏失败分类，不复制
 整个 localStorage 或网络请求。
+
+客户端收到 API 确认不等于已经直接核验生产数据库。Windows Issue 必须如实写明是否
+存在服务端聚合证据；没有时写“待主审任务核验”，不得用“接口写入语义”推断
+`traffic_counters` 或 `traffic_daily` 已有记录。主审任务会在拉取 Issue 后通过授权的
+只读运维通道核对两张表的脱敏行数/总量，不读取或公开账号、IP、设备标识、凭据和明细。
 
 随时查看进度：
 

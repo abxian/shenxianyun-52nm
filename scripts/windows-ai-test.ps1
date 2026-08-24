@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Run", "Build", "Record", "Status", "Publish")]
+    [ValidateSet("Run", "Build", "Record", "Status", "Publish", "SelfTest")]
     [string]$Mode = "Status",
     [string]$RunId,
     [string]$CaseId,
@@ -139,11 +139,81 @@ function Get-ManualTemplate {
     return [PSCustomObject]@{ results = $items }
 }
 
+function Assert-ResultMatrix {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Results,
+        [Parameter(Mandatory = $true)][object[]]$ExpectedCases,
+        [Parameter(Mandatory = $true)][string[]]$AllowedStatuses,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (@($Results).Count -ne @($ExpectedCases).Count) {
+        throw "$Label result count does not match the case specification."
+    }
+    foreach ($expected in @($ExpectedCases)) {
+        $matches = @($Results | Where-Object { $_.id -eq $expected.id })
+        if ($matches.Count -ne 1) {
+            throw "$Label result ID must occur exactly once: $($expected.id)"
+        }
+    }
+    foreach ($result in @($Results)) {
+        if ($result.status -notin $AllowedStatuses) {
+            throw "$Label result has an invalid status: $($result.id)"
+        }
+    }
+}
+
+function Get-TestVerdict {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$AutomatedResults,
+        [Parameter(Mandatory = $true)][object[]]$ManualResults
+    )
+    # The outer array expression is required for Windows PowerShell 5.1.
+    # Without it, one pipeline match becomes a scalar whose Count can be null,
+    # allowing exactly one failure to be misclassified as PASS.
+    $automatedFailureCount = @($AutomatedResults | Where-Object { $_.status -eq "fail" }).Count
+    $manualFailureCount = @($ManualResults | Where-Object { $_.status -eq "fail" }).Count
+    $blockedCount = @($ManualResults | Where-Object { $_.status -in @("blocked", "not_run") }).Count
+    if (($automatedFailureCount -gt 0) -or ($manualFailureCount -gt 0)) {
+        return "FAIL"
+    }
+    if ($blockedCount -gt 0) {
+        return "BLOCKED"
+    }
+    return "PASS"
+}
+
 Set-Location $RepoRoot
 if (-not (Test-Path $CasePath)) {
     throw "Test case file does not exist: $CasePath"
 }
 $CaseSpec = Read-JsonFile -Path $CasePath
+
+if ($Mode -eq "SelfTest") {
+    $oneAutomatedPass = @([PSCustomObject]@{ id = "AUTO-ONE"; status = "pass" })
+    $oneAutomatedFail = @([PSCustomObject]@{ id = "AUTO-ONE"; status = "fail" })
+    $oneManualPass = @([PSCustomObject]@{ id = "WIN-ONE"; status = "pass" })
+    $oneManualFail = @([PSCustomObject]@{ id = "WIN-ONE"; status = "fail" })
+    $oneManualBlocked = @([PSCustomObject]@{ id = "WIN-ONE"; status = "blocked" })
+    $expectedAutomated = @([PSCustomObject]@{ id = "AUTO-ONE" })
+    $expectedManual = @([PSCustomObject]@{ id = "WIN-ONE" })
+
+    Assert-ResultMatrix -Results $oneAutomatedPass -ExpectedCases $expectedAutomated -AllowedStatuses @("pass", "fail") -Label "Automated"
+    Assert-ResultMatrix -Results $oneManualPass -ExpectedCases $expectedManual -AllowedStatuses @("pass", "fail", "blocked", "not_run") -Label "Manual"
+    if ((Get-TestVerdict -AutomatedResults $oneAutomatedPass -ManualResults $oneManualPass) -ne "PASS") {
+        throw "Self-test failed: all-pass matrix was not PASS."
+    }
+    if ((Get-TestVerdict -AutomatedResults $oneAutomatedFail -ManualResults $oneManualPass) -ne "FAIL") {
+        throw "Self-test failed: one automated failure was not FAIL."
+    }
+    if ((Get-TestVerdict -AutomatedResults $oneAutomatedPass -ManualResults $oneManualFail) -ne "FAIL") {
+        throw "Self-test failed: one manual failure was not FAIL."
+    }
+    if ((Get-TestVerdict -AutomatedResults $oneAutomatedPass -ManualResults $oneManualBlocked) -ne "BLOCKED") {
+        throw "Self-test failed: one blocked manual result was not BLOCKED."
+    }
+    Write-Host "Windows AI verdict self-test passed." -ForegroundColor Green
+    exit 0
+}
 
 if ($Mode -eq "Run") {
     if ($env:OS -ne "Windows_NT") {
@@ -197,8 +267,14 @@ if ($Mode -eq "Run") {
         $automatedResults += Invoke-CapturedCommand -Id $check.id -Title $check.title -Executable $check.executable -Arguments @($check.arguments) -LogDirectory $logDirectory
     }
     Write-JsonFile -Value ([PSCustomObject]@{ results = $automatedResults }) -Path (Join-Path $runDirectory "automated-results.json")
-    Write-Host "`nAutomated checks completed. Run ID: $newRunId" -ForegroundColor Green
+    $automatedFailureCount = @($automatedResults | Where-Object { $_.status -eq "fail" }).Count
+    Write-Host "`nAutomated checks completed. Run ID: $newRunId"
     Write-Host "Raw logs remain local only: .ai-test-results/$newRunId/raw-logs-local-only"
+    if ($automatedFailureCount -gt 0) {
+        Write-Host "$automatedFailureCount automated check(s) failed. Do not build or claim PASS." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "All automated checks passed." -ForegroundColor Green
     Write-Host "Next: -Mode Build -RunId $newRunId"
     exit 0
 }
@@ -306,11 +382,25 @@ if ($Mode -eq "Publish") {
         Assert-SafeText -Text "$($item.summary)`n$($item.evidence)"
     }
 
-    $automatedFailureCount = (@($automated.results) | Where-Object { $_.status -eq "fail" }).Count
-    $manualFailureCount = (@($manual.results) | Where-Object { $_.status -eq "fail" }).Count
-    $hasFailure = ($automatedFailureCount -gt 0) -or ($manualFailureCount -gt 0)
-    $hasBlocked = (@($manual.results) | Where-Object { $_.status -in @("blocked", "not_run") }).Count -gt 0
-    $verdict = if ($hasFailure) { "FAIL" } elseif ($hasBlocked) { "BLOCKED" } else { "PASS" }
+    Assert-ResultMatrix -Results @($automated.results) -ExpectedCases @($CaseSpec.automatedChecks) -AllowedStatuses @("pass", "fail") -Label "Automated"
+    Assert-ResultMatrix -Results @($manual.results) -ExpectedCases @($CaseSpec.manualChecks) -AllowedStatuses @("pass", "fail", "blocked", "not_run") -Label "Manual"
+
+    if (-not $state.actionsRunId -or -not $state.actionsUrl) {
+        throw "Development Test evidence is missing. Execute -Mode Build first."
+    }
+    $actionsJson = & gh run view $state.actionsRunId --repo $CaseSpec.repository --json status,conclusion,headSha,url
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to verify the recorded Development Test."
+    }
+    $actions = $actionsJson | ConvertFrom-Json
+    if ($actions.status -ne "completed" -or $actions.conclusion -ne "success") {
+        throw "Recorded Development Test is not completed successfully."
+    }
+    if ($actions.headSha -ne $state.commit -or $actions.url -ne $state.actionsUrl) {
+        throw "Recorded Development Test does not match the tested commit or URL."
+    }
+
+    $verdict = Get-TestVerdict -AutomatedResults @($automated.results) -ManualResults @($manual.results)
 
     $bodyPath = Join-Path $effectiveRunDirectory "github-issue-body.md"
     $lines = @(

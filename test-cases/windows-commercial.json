@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-24.2",
+  "caseVersion": "2026-08-24.3",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
@@ -145,9 +145,10 @@
         "产生少量可控上行和下行流量",
         "检查客户端累计流量增长",
         "在 60 秒内检查本机脱敏诊断 shenxianyun.managedTrafficStatus.v1 的 state/outcome 变为 acknowledged，且 acknowledgedSequence 比测试前增加",
-        "后端已灰度时检查后台设备和上下行统计"
+        "后端已灰度时检查后台设备和上下行统计",
+        "报告必须区分客户端 API 确认与主审任务的生产表聚合核验；不得把 API 成功推断成数据库已核验"
       ],
-      "expected": "客户端上下行累计增长；脱敏诊断显示 acknowledged 且 sequence 推进；后端已灰度时同一物理设备只占一个统一设备名额并产生流量统计。",
+      "expected": "Windows 侧通过条件：客户端上下行累计增长，脱敏诊断显示 acknowledged 且 sequence 推进；最终发布条件：主审任务再以授权只读方式确认 traffic_counters 与 traffic_daily 聚合均产生非零记录。Windows Issue 未获得直接聚合证据时必须写待主审核验，不得声称已验证数据库写入。",
       "rollback": "停止测试流量并断开节点；后端未灰度时将服务端部分标为 blocked。"
     },
     {
