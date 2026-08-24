@@ -137,6 +137,10 @@ import {
   type ManagedTrafficCounter,
 } from '@/services/managed-traffic-counter'
 import {
+  parseManagedTrafficDiagnostic,
+  reduceManagedTrafficDiagnostic,
+} from '@/services/managed-traffic-diagnostics'
+import {
   createManagedTrafficScheduler,
   ManagedTrafficReportError,
   type ManagedTrafficReportOutcome,
@@ -217,23 +221,12 @@ const persistManagedTrafficDiagnostic = (
   transition: ManagedTrafficSchedulerTransition,
 ) => {
   try {
+    const previous = parseManagedTrafficDiagnostic(
+      localStorage.getItem(MANAGED_TRAFFIC_DIAGNOSTIC_STORAGE_KEY),
+    )
     localStorage.setItem(
       MANAGED_TRAFFIC_DIAGNOSTIC_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        state:
-          transition.outcome?.status === 'acknowledged'
-            ? 'acknowledged'
-            : transition.state,
-        updatedAt: transition.at,
-        failureCount: transition.failureCount,
-        nextAttemptAt: transition.nextAttemptAt,
-        reason: transition.reason,
-        outcome: transition.outcome?.status,
-        acknowledgedSequence: transition.outcome?.sequence,
-        errorCode: transition.errorCode,
-        httpStatus: transition.httpStatus,
-      }),
+      JSON.stringify(reduceManagedTrafficDiagnostic(previous, transition)),
     )
   } catch {
     // 诊断状态是可选证据；存储不可用时不得影响真实流量上报。
@@ -940,7 +933,7 @@ const HomePage = () => {
     ((online: boolean) => Promise<void>) | null
   >(null)
   const reportClientTrafficRef = useRef<
-    (() => Promise<ManagedTrafficReportOutcome>) | null
+    ((signal: AbortSignal) => Promise<ManagedTrafficReportOutcome>) | null
   >(null)
   const managedAuthRef = useRef<ManagedAuth | null>(null)
   // eslint-disable-next-line @eslint-react/no-unused-state -- readiness is consumed by the subscription lifecycle effect, not JSX.
@@ -1051,6 +1044,7 @@ const HomePage = () => {
       try {
         return await fetchWithVerifiedTls(url, init)
       } catch (err) {
+        if (init?.signal?.aborted) throw err
         // 国内主域名必须直连；失败后由上层自动换线路，不允许绕代理重试。
         if (isDomesticApiUrl(url)) throw err
         // 第 2 层：内核混合端口（在跑时）或系统代理
@@ -1061,7 +1055,8 @@ const HomePage = () => {
               ...init,
               proxy: { all: p },
             })
-          } catch {
+          } catch (proxyError) {
+            if (init?.signal?.aborted) throw proxyError
             // 落到第 3 层
           }
         }
@@ -1752,8 +1747,8 @@ const HomePage = () => {
     sendClientPresenceRef.current = sendClientPresence
   }, [sendClientPresence])
 
-  const reportClientTraffic =
-    useCallback(async (): Promise<ManagedTrafficReportOutcome> => {
+  const reportClientTraffic = useCallback(
+    async (signal: AbortSignal): Promise<ManagedTrafficReportOutcome> => {
       const value = currentCode
       if (!value || !running) return { status: 'inactive' }
 
@@ -1787,6 +1782,7 @@ const HomePage = () => {
           {
             method: 'POST',
             connectTimeout: 5000,
+            signal,
             headers: {
               Authorization: `Bearer ${auth.deviceToken}`,
               'Content-Type': 'application/json',
@@ -1803,7 +1799,10 @@ const HomePage = () => {
             }),
           },
         )
-        const data = (await response.json().catch(() => null)) as {
+        const data = (await response.json().catch((error) => {
+          if (signal.aborted) throw error
+          return null
+        })) as {
           ok?: boolean
           duplicate?: boolean
           code?: string
@@ -1813,6 +1812,7 @@ const HomePage = () => {
           day_limit?: number
           month_limit?: number
         } | null
+        if (signal.aborted) throw new ManagedTrafficReportError('timeout')
         if (response.status === 429 || response.status === 503) {
           const retryAfterSeconds = Number(response.headers.get('Retry-After'))
           trafficReportRetryAfterRef.current = Number.isFinite(
@@ -1894,6 +1894,7 @@ const HomePage = () => {
         {
           method: 'POST',
           connectTimeout: 5000,
+          signal,
           headers: {
             'Content-Type': 'application/json',
             'User-Agent': CLIENT_UA,
@@ -1911,11 +1912,15 @@ const HomePage = () => {
           }),
         },
       )
-      const data = (await response.json().catch(() => null)) as {
+      const data = (await response.json().catch((error) => {
+        if (signal.aborted) throw error
+        return null
+      })) as {
         ok?: boolean
         code?: string
         message?: string
       } | null
+      if (signal.aborted) throw new ManagedTrafficReportError('timeout')
       if (response.status === 429 || response.status === 503) {
         const retryAfterSeconds = Number(response.headers.get('Retry-After'))
         trafficReportRetryAfterRef.current = Number.isFinite(retryAfterSeconds)
@@ -1928,7 +1933,9 @@ const HomePage = () => {
       // 只有服务端明确确认成功才推进基线，失败增量留到下一轮重试。
       lastReportedTrafficRef.current = current
       return { status: 'acknowledged' }
-    }, [apiFetch, currentCode, running, stopForServerLimit])
+    },
+    [apiFetch, currentCode, running, stopForServerLimit],
+  )
 
   useEffect(() => {
     reportClientTrafficRef.current = reportClientTraffic
@@ -2244,6 +2251,26 @@ const HomePage = () => {
   }, [currentCode, running, syncExpiresAt, updateState])
 
   useEffect(() => {
+    if (!managedAuthReady || !currentCode) {
+      trafficCounterRef.current = null
+      pendingManagedTrafficRef.current = undefined
+      return
+    }
+    if (trafficCounterRef.current?.accessCode === currentCode) return
+
+    const restored = parseManagedTrafficCounter(
+      localStorage.getItem(MANAGED_TRAFFIC_STORAGE_KEY),
+      currentCode,
+    )
+    const counter =
+      restored ||
+      createManagedTrafficCounter(currentCode, trafficTotalsRef.current)
+    trafficCounterRef.current = counter
+    pendingManagedTrafficRef.current = undefined
+    localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
+  }, [currentCode, managedAuthReady])
+
+  useEffect(() => {
     const totals = {
       upload: connectionResponse.data?.uploadTotal ?? 0,
       download: connectionResponse.data?.downloadTotal ?? 0,
@@ -2274,21 +2301,17 @@ const HomePage = () => {
       return
     }
 
-    const restored = parseManagedTrafficCounter(
-      localStorage.getItem(MANAGED_TRAFFIC_STORAGE_KEY),
-      currentCode,
-    )
     const counter =
-      restored ||
+      trafficCounterRef.current ||
       createManagedTrafficCounter(currentCode, trafficTotalsRef.current)
     trafficCounterRef.current = counter
     pendingManagedTrafficRef.current = undefined
     localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
 
     const scheduler = createManagedTrafficScheduler({
-      report: async () => {
+      report: async (signal) => {
         const report = reportClientTrafficRef.current
-        return report ? report() : { status: 'inactive' }
+        return report ? report(signal) : { status: 'inactive' }
       },
       takeRetryAfterMs: () => {
         const delay = trafficReportRetryAfterRef.current
@@ -2299,6 +2322,10 @@ const HomePage = () => {
     })
     trafficSchedulerRef.current = scheduler
     scheduler.start()
+    const initialPayload = managedTrafficPayload(counter)
+    if (initialPayload.upload_total > 0 || initialPayload.download_total > 0) {
+      scheduler.notifyActivity()
+    }
     return () => {
       if (trafficSchedulerRef.current === scheduler) {
         trafficSchedulerRef.current = null

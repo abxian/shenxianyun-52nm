@@ -66,9 +66,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 脚本会输出 `Run ID`。记住该值；不填写 `-RunId` 时，后续命令默认使用最近一次运行。
 自动阶段会执行锁定依赖安装、类型、格式、Lint、流量、导入、刷新、更新通道、品牌和
-受管订阅名称隔离、Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵，但
+受管订阅名称隔离、Windows 验收程序自检、Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵，但
 执行器最终返回非零；
 此时必须停止 Build/真机步骤并把该轮作为 FAIL，不能继续生成 PASS。
+
+Run 还会强制核对 Windows x64、Node.js 24、pnpm 11.3.0、LF 工作树、本地 HEAD 与远端
+候选分支 HEAD。运行状态会保存用例 SHA-256；后续任何源码、HEAD、远端分支或用例变化
+都会使本轮失效，必须重新 fresh clone，不能沿用旧 Run ID。
 
 ### B. 构建并下载 Windows x64 临时安装包
 
@@ -78,7 +82,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 脚本只触发仓库 `Development Test` 的 Windows x64 项，等待 Actions 完成并将临时 EXE
-下载到本机忽略目录。该构件不是正式发布，不得传播或上传到其他渠道。
+下载到本机忽略目录。Build 会再次强校验全部自动项为 pass，并核对 Actions HEAD、唯一
+Windows EXE 的大小和 GitHub SHA-256；任一不一致都会中止。该构件不是正式发布，不得
+传播或上传到其他渠道。
 
 ### C. 执行 Windows 真机用例
 
@@ -102,18 +108,25 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - `blocked`：缺少安全前置条件；
 - `not_run`：尚未执行，发布时整体结论会是 BLOCKED。
 
+Record 必须严格按机器可读用例顺序执行；`pass/fail/blocked` 都必须填写非空的脱敏摘要
+和证据说明。脚本拒绝跳项、空证据或在 Build/构件哈希未核验前记录人工结果。
+
 失败摘要要写清楚“操作步骤、实际现象、是否稳定复现、回滚结果”，但不得复制原始日志。
 原始日志只保留在本机，主审阅任务确有需要时再指定最小脱敏片段。
 
 `WIN-TRAFFIC-001` 允许读取本机 localStorage 的
-`shenxianyun.managedTrafficStatus.v1`。该记录只包含状态、时间、失败分类、HTTP 状态和
-确认序号，不含提取码、Token、URL、设备标识或流量值。Issue 只写
-`scheduled/attempting/acknowledged/retrying`、确认序号是否推进和脱敏失败分类，不复制
-整个 localStorage 或网络请求。
+`shenxianyun.managedTrafficStatus.v1`。当前诊断 schema 为 version 2，只包含调度状态、
+时间、失败分类、HTTP 状态、尝试代次/时长和确认序号，不含提取码、Token、URL、设备
+标识或流量值。Issue 只写 `scheduled/attempting/acknowledged/retrying`、是否出现 timeout、
+确认序号/确认时间是否推进和脱敏失败分类，不复制整个 localStorage 或网络请求。
 
-必须先读取 `acknowledgedSequence` 基线，再产生少量受控双向流量并开始 60 秒计时；等待
-期间不得重启应用、切换账号或重新导入来人为重建调度器。通过条件是客户端累计双向增长，
-并在同一运行周期内看到新的 `acknowledged` 且确认序号严格大于基线。
+必须先等诊断 version 2 进入 `scheduled` 或 `acknowledged`，再读取
+`acknowledgedSequence`/`lastAcknowledgedAt` 基线；序号不存在时按 0 处理。随后产生少量
+受控双向流量并开始 60 秒计时；等待期间不得重启应用、切换账号、重新导入或手工触发第二
+次上报。通过条件是客户端累计双向增长，而且确认序号严格增加、确认时间更新。当前 state
+稍后回到 scheduled 不影响判定，因为两个确认字段会持久保留。若首个请求出现 timeout，
+必须看到自动取消、retrying 和同序列自动重试，并仍在 60 秒总窗口内确认；永久停留
+attempting 必须判 fail。
 
 客户端收到 API 确认不等于已经直接核验生产数据库。Windows Issue 必须如实写明是否
 存在服务端聚合证据；没有时写“待主审任务核验”，不得用“接口写入语义”推断

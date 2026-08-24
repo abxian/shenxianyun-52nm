@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-24.5",
+  "caseVersion": "2026-08-25.6",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
   "targetBranch": "codex/commercial-canary-20260824",
-  "requiredAncestor": "bd349701457c37473438b58e7d7d6b301f14577c",
+  "requiredAncestor": "d77be16a5a2e5fa905b06c208660f304bd4f8891",
   "developmentWorkflow": "dev.yml",
   "automatedChecks": [
     {
@@ -67,6 +67,20 @@
       "title": "受管订阅名称与提取码隔离测试",
       "executable": "pnpm",
       "arguments": ["test:managed-subscription"]
+    },
+    {
+      "id": "AUTO-WINDOWS-KIT",
+      "title": "Windows 验收顺序、构建门禁与结论自检",
+      "executable": "powershell",
+      "arguments": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".\\scripts\\windows-ai-test.ps1",
+        "-Mode",
+        "SelfTest"
+      ]
     },
     {
       "id": "AUTO-DIFF",
@@ -148,18 +162,21 @@
       "risk": "medium",
       "requires": [
         "连接测试节点",
+        "脱敏诊断版本为 2 且调度器已进入 scheduled 或 acknowledged",
         "52nm 商业化后端已灰度时才可验收服务端归一统计"
       ],
       "steps": [
-        "产生流量前读取本机脱敏诊断并记录 acknowledgedSequence 基线；不得记录整个 localStorage",
+        "先等待本机脱敏诊断版本为 2，确认调度器已 ready；若 acknowledgedSequence 尚不存在则基线按 0 处理",
+        "产生流量前记录 acknowledgedSequence 与 lastAcknowledgedAt 基线；不得记录整个 localStorage",
         "产生少量可控上行和下行流量",
         "检查客户端累计流量增长",
-        "在 60 秒内检查本机脱敏诊断 shenxianyun.managedTrafficStatus.v1 的 state/outcome 变为 acknowledged，且 acknowledgedSequence 比测试前增加",
+        "在 60 秒内检查本机脱敏诊断 shenxianyun.managedTrafficStatus.v1：acknowledgedSequence 严格增加且 lastAcknowledgedAt 晚于基线；当前 state 即使已回到 scheduled 也不得抹掉这两个确认字段",
+        "若首个请求超时，确认诊断先显示 timeout/retrying，随后自动用同一幂等序列重试并在 60 秒总窗口内得到确认；不得手动触发第二次上报",
         "等待期间不得通过重启应用、切换账号或重新导入来人为重建调度器",
         "后端已灰度时检查后台设备和上下行统计",
         "报告必须区分客户端 API 确认与主审任务的生产表聚合核验；不得把 API 成功推断成数据库已核验"
       ],
-      "expected": "Windows 侧通过条件：客户端上下行累计增长，脱敏诊断显示 acknowledged 且 sequence 推进；最终发布条件：主审任务再以授权只读方式确认 traffic_counters 与 traffic_daily 聚合均产生非零记录。Windows Issue 未获得直接聚合证据时必须写待主审核验，不得声称已验证数据库写入。",
+      "expected": "Windows 侧通过条件：客户端上下行累计增长；60 秒内 acknowledgedSequence 严格推进且 lastAcknowledgedAt 更新；请求超时时客户端自动取消并重试，不永久停留 attempting。最终发布条件：主审任务再以授权只读方式确认 traffic_counters 与 traffic_daily 聚合均产生非零记录。Windows Issue 未获得直接聚合证据时必须写待主审核验，不得声称已验证数据库写入。",
       "rollback": "停止测试流量并断开节点；后端未灰度时将服务端部分标为 blocked。"
     },
     {

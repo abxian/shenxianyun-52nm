@@ -162,6 +162,80 @@ function Assert-ResultMatrix {
     }
 }
 
+function Assert-AutomatedChecksPassed {
+    param([Parameter(Mandatory = $true)][object[]]$Results)
+    $failures = @($Results | Where-Object { $_.status -ne "pass" })
+    if ($failures.Count -gt 0) {
+        throw "Automated checks are not all pass. Build is forbidden."
+    }
+}
+
+function Assert-ManualRecordOrder {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Results,
+        [Parameter(Mandatory = $true)][object[]]$ExpectedCases,
+        [Parameter(Mandatory = $true)][string]$TargetId
+    )
+    $targetIndex = -1
+    for ($index = 0; $index -lt $ExpectedCases.Count; $index += 1) {
+        if ($ExpectedCases[$index].id -eq $TargetId) {
+            $targetIndex = $index
+            break
+        }
+    }
+    if ($targetIndex -lt 0) {
+        throw "Unknown manual case: $TargetId"
+    }
+    if ($targetIndex -gt 0) {
+        for ($index = 0; $index -lt $targetIndex; $index += 1) {
+            $priorId = $ExpectedCases[$index].id
+            $prior = @($Results | Where-Object { $_.id -eq $priorId }) | Select-Object -First 1
+            if (-not $prior -or $prior.status -eq "not_run") {
+                throw "Manual cases must be recorded in order. Complete $priorId first."
+            }
+        }
+    }
+}
+
+function Assert-CandidateState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Cases,
+        [Parameter(Mandatory = $true)][string]$CasesPath
+    )
+    $branch = (& git branch --show-current).Trim()
+    $commit = (& git rev-parse HEAD).Trim()
+    if ($branch -ne $State.branch -or $branch -ne $Cases.targetBranch) {
+        throw "Current branch no longer matches the recorded test candidate."
+    }
+    if ($commit -ne $State.commit) {
+        throw "Current HEAD no longer matches the commit recorded by Run. Clone the final candidate again."
+    }
+    $dirty = (& git status --porcelain --untracked-files=normal | Out-String).Trim()
+    if ($dirty) {
+        throw "Working tree changed after Run. Do not continue a stale test."
+    }
+    if ($State.caseVersion -ne $Cases.caseVersion) {
+        throw "Test case version changed after Run. Clone the final candidate again."
+    }
+    $caseSha256 = (Get-FileHash -Algorithm SHA256 -Path $CasesPath).Hash.ToLowerInvariant()
+    if (-not $State.caseSha256 -or $State.caseSha256 -ne $caseSha256) {
+        throw "Test case content changed after Run. Clone the final candidate again."
+    }
+    & git merge-base --is-ancestor $Cases.requiredAncestor $State.commit
+    if ($LASTEXITCODE -ne 0) {
+        throw "Recorded commit does not contain the required candidate baseline."
+    }
+    $remoteLine = (& git ls-remote origin "refs/heads/$($State.branch)" | Out-String).Trim()
+    if (-not $remoteLine) {
+        throw "Unable to verify the remote candidate branch."
+    }
+    $remoteHead = ($remoteLine -split "\s+")[0]
+    if ($remoteHead -ne $State.commit) {
+        throw "Remote candidate branch moved after Run. Start a new test from a fresh clone."
+    }
+}
+
 function Get-TestVerdict {
     param(
         [Parameter(Mandatory = $true)][object[]]$AutomatedResults,
@@ -211,6 +285,34 @@ if ($Mode -eq "SelfTest") {
     if ((Get-TestVerdict -AutomatedResults $oneAutomatedPass -ManualResults $oneManualBlocked) -ne "BLOCKED") {
         throw "Self-test failed: one blocked manual result was not BLOCKED."
     }
+    $automatedGateRejected = $false
+    try {
+        Assert-AutomatedChecksPassed -Results $oneAutomatedFail
+    }
+    catch {
+        $automatedGateRejected = $true
+    }
+    if (-not $automatedGateRejected) {
+        throw "Self-test failed: Build gate accepted a failed automated check."
+    }
+    $orderedCases = @(
+        [PSCustomObject]@{ id = "WIN-ONE" },
+        [PSCustomObject]@{ id = "WIN-TWO" }
+    )
+    $orderedResults = @(
+        [PSCustomObject]@{ id = "WIN-ONE"; status = "not_run" },
+        [PSCustomObject]@{ id = "WIN-TWO"; status = "not_run" }
+    )
+    $orderGateRejected = $false
+    try {
+        Assert-ManualRecordOrder -Results $orderedResults -ExpectedCases $orderedCases -TargetId "WIN-TWO"
+    }
+    catch {
+        $orderGateRejected = $true
+    }
+    if (-not $orderGateRejected) {
+        throw "Self-test failed: Record gate accepted an out-of-order case."
+    }
     Write-Host "Windows AI verdict self-test passed." -ForegroundColor Green
     exit 0
 }
@@ -235,6 +337,27 @@ if ($Mode -eq "Run") {
     if ($dirty) {
         throw "Working tree is dirty. Do not modify source; restore it or clone again."
     }
+    $badWorkingTreeEol = @(& git ls-files --eol | Select-String 'w/(crlf|mixed)')
+    if ($badWorkingTreeEol.Count -gt 0) {
+        throw "Working tree contains CRLF or mixed source files. Clone again with core.autocrlf=false."
+    }
+
+    $nodeVersion = (& node --version).Trim()
+    $pnpmVersion = (& pnpm --version).Trim()
+    if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+        throw "This acceptance case requires Windows x64 (AMD64)."
+    }
+    if ($nodeVersion -notmatch '^v24\.') {
+        throw "This acceptance case requires Node.js 24."
+    }
+    if ($pnpmVersion -ne "11.3.0") {
+        throw "This acceptance case requires pnpm 11.3.0."
+    }
+    $commit = (& git rev-parse HEAD).Trim()
+    $remoteLine = (& git ls-remote origin "refs/heads/$branch" | Out-String).Trim()
+    if (-not $remoteLine -or ($remoteLine -split "\s+")[0] -ne $commit) {
+        throw "Local HEAD is not the current remote candidate branch HEAD. Clone again before testing."
+    }
 
     New-Item -ItemType Directory -Force -Path $ResultsRoot | Out-Null
     $newRunId = "win-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), (Get-Random -Minimum 1000 -Maximum 9999)
@@ -249,14 +372,18 @@ if ($Mode -eq "Run") {
         caseVersion = $CaseSpec.caseVersion
         repository = $CaseSpec.repository
         branch = $branch
-        commit = (& git rev-parse HEAD).Trim()
+        commit = $commit
+        caseSha256 = (Get-FileHash -Algorithm SHA256 -Path $CasePath).Hash.ToLowerInvariant()
         startedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
         os = $osCaption
         architecture = $env:PROCESSOR_ARCHITECTURE
-        nodeVersion = (& node --version).Trim()
-        pnpmVersion = (& pnpm --version).Trim()
+        nodeVersion = $nodeVersion
+        pnpmVersion = $pnpmVersion
         actionsRunId = $null
         actionsUrl = $null
+        artifactName = $null
+        artifactSize = $null
+        artifactSha256 = $null
     }
     Save-State -State $state -Directory $runDirectory
     Write-JsonFile -Value (Get-ManualTemplate -Cases $CaseSpec.manualChecks) -Path (Join-Path $runDirectory "manual-results.json")
@@ -297,6 +424,13 @@ if ($Mode -eq "Build") {
     if ($state.branch -ne $CaseSpec.targetBranch) {
         throw "The branch stored in test state does not match the test target."
     }
+    Assert-CandidateState -State $state -Cases $CaseSpec -CasesPath $CasePath
+    if (-not (Test-Path $automatedPath)) {
+        throw "Automated results are missing. Execute -Mode Run first."
+    }
+    $automated = Read-JsonFile -Path $automatedPath
+    Assert-ResultMatrix -Results @($automated.results) -ExpectedCases @($CaseSpec.automatedChecks) -AllowedStatuses @("pass", "fail") -Label "Automated"
+    Assert-AutomatedChecksPassed -Results @($automated.results)
 
     $dispatchStarted = (Get-Date).ToUniversalTime().AddMinutes(-1)
     & gh workflow run $CaseSpec.developmentWorkflow --repo $CaseSpec.repository --ref $state.branch -f run_windows=true -f run_macos_aarch64=false -f run_windows_arm64=false -f run_linux_amd64=false
@@ -325,12 +459,42 @@ if ($Mode -eq "Build") {
     if ($LASTEXITCODE -ne 0) {
         throw "Development Test failed. Keep the Actions URL and mark dependent manual cases blocked."
     }
+    $artifactJson = & gh api "repos/$($CaseSpec.repository)/actions/runs/$($candidate.databaseId)/artifacts"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Development Test passed, but artifact metadata could not be verified."
+    }
+    $artifactResponse = $artifactJson | ConvertFrom-Json
+    $artifacts = @($artifactResponse.artifacts | Where-Object { -not $_.expired })
+    if ($artifacts.Count -ne 1) {
+        throw "Expected exactly one non-expired Windows x64 artifact."
+    }
+    $artifact = $artifacts[0]
+    if (-not $artifact.name.EndsWith(".exe") -or [int64]$artifact.size_in_bytes -lt 10000000) {
+        throw "Development artifact is not a plausible Windows installer."
+    }
+    if (-not $artifact.digest -or -not $artifact.digest.StartsWith("sha256:")) {
+        throw "Development artifact is missing a GitHub SHA-256 digest."
+    }
     $installerDirectory = Join-Path $effectiveRunDirectory "windows-installer-local-only"
     New-Item -ItemType Directory -Force -Path $installerDirectory | Out-Null
     & gh run download $candidate.databaseId --repo $CaseSpec.repository --dir $installerDirectory
     if ($LASTEXITCODE -ne 0) {
         throw "Actions passed, but the Windows artifact download failed."
     }
+    $installers = @(Get-ChildItem -Path $installerDirectory -Recurse -File -Filter "*.exe")
+    if ($installers.Count -ne 1) {
+        throw "Artifact download did not contain exactly one Windows installer."
+    }
+    $installer = $installers[0]
+    $installerSha256 = (Get-FileHash -Algorithm SHA256 -Path $installer.FullName).Hash.ToLowerInvariant()
+    $githubSha256 = $artifact.digest.Substring(7).ToLowerInvariant()
+    if ($installer.Length -ne [int64]$artifact.size_in_bytes -or $installerSha256 -ne $githubSha256) {
+        throw "Downloaded installer size or SHA-256 does not match GitHub artifact metadata."
+    }
+    $state.artifactName = [string]$artifact.name
+    $state.artifactSize = [int64]$artifact.size_in_bytes
+    $state.artifactSha256 = $installerSha256
+    Save-State -State $state -Directory $effectiveRunDirectory
     Write-Host "Temporary Windows installer: .ai-test-results/$effectiveRunId/windows-installer-local-only" -ForegroundColor Green
     Write-Host "Before installation, confirm this is a spare, virtualized, or otherwise recoverable test environment."
     exit 0
@@ -340,12 +504,21 @@ if ($Mode -eq "Record") {
     if (-not $CaseId) {
         throw "Record mode requires -CaseId."
     }
+    if ($Status -eq "not_run") {
+        throw "Record mode requires pass, fail, or blocked. not_run is reserved for unexecuted cases."
+    }
+    if (-not $Summary.Trim() -or -not $Evidence.Trim()) {
+        throw "Record mode requires a non-empty redacted summary and evidence note."
+    }
+    Assert-CandidateState -State $state -Cases $CaseSpec -CasesPath $CasePath
+    if (-not $state.actionsRunId -or -not $state.actionsUrl -or -not $state.artifactSha256) {
+        throw "Verified Development Test and installer evidence are required before manual recording."
+    }
     Assert-SafeText -Text "$Summary`n$Evidence"
     $manual = Read-JsonFile -Path $manualPath
+    Assert-ResultMatrix -Results @($manual.results) -ExpectedCases @($CaseSpec.manualChecks) -AllowedStatuses @("pass", "fail", "blocked", "not_run") -Label "Manual"
+    Assert-ManualRecordOrder -Results @($manual.results) -ExpectedCases @($CaseSpec.manualChecks) -TargetId $CaseId
     $target = @($manual.results) | Where-Object { $_.id -eq $CaseId } | Select-Object -First 1
-    if (-not $target) {
-        throw "Unknown manual case: $CaseId"
-    }
     $target.status = $Status
     $target.summary = $Summary.Trim()
     $target.evidence = $Evidence.Trim()
@@ -376,16 +549,20 @@ if ($Mode -eq "Publish") {
     if (-not (Test-Path $automatedPath)) {
         throw "Automated results are missing. Execute -Mode Run first."
     }
+    Assert-CandidateState -State $state -Cases $CaseSpec -CasesPath $CasePath
     $automated = Read-JsonFile -Path $automatedPath
     $manual = Read-JsonFile -Path $manualPath
     foreach ($item in @($manual.results)) {
+        if ($item.status -ne "not_run" -and (-not $item.summary.Trim() -or -not $item.evidence.Trim())) {
+            throw "Completed manual result is missing its redacted summary or evidence: $($item.id)"
+        }
         Assert-SafeText -Text "$($item.summary)`n$($item.evidence)"
     }
 
     Assert-ResultMatrix -Results @($automated.results) -ExpectedCases @($CaseSpec.automatedChecks) -AllowedStatuses @("pass", "fail") -Label "Automated"
     Assert-ResultMatrix -Results @($manual.results) -ExpectedCases @($CaseSpec.manualChecks) -AllowedStatuses @("pass", "fail", "blocked", "not_run") -Label "Manual"
 
-    if (-not $state.actionsRunId -or -not $state.actionsUrl) {
+    if (-not $state.actionsRunId -or -not $state.actionsUrl -or -not $state.artifactName -or -not $state.artifactSha256) {
         throw "Development Test evidence is missing. Execute -Mode Build first."
     }
     $actionsJson = & gh run view $state.actionsRunId --repo $CaseSpec.repository --json status,conclusion,headSha,url
@@ -415,6 +592,7 @@ if ($Mode -eq "Publish") {
         "- Architecture: ``$($state.architecture)``",
         "- Node / pnpm: ``$($state.nodeVersion)`` / ``$($state.pnpmVersion)``",
         "- Development Test: $(if ($state.actionsUrl) { $state.actionsUrl } else { 'not run' })",
+        "- Installer artifact: ``$($state.artifactName)`` / $($state.artifactSize) bytes / SHA-256 ``$($state.artifactSha256)``",
         "",
         "### Automated checks",
         "",

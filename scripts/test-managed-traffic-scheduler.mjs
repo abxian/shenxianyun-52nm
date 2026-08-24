@@ -6,6 +6,10 @@ import {
   ManagedTrafficReportError,
 } from '../src/services/managed-traffic-scheduler.ts'
 
+const flushPromises = async () => {
+  for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
+}
+
 class FakeClock {
   nowMs = 0
   nextId = 1
@@ -33,9 +37,7 @@ class FakeClock {
       this.tasks.delete(id)
       this.nowMs = task.at
       task.callback()
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
+      await flushPromises()
     }
     this.nowMs = target
   }
@@ -51,6 +53,29 @@ const createScheduler = (clock, options) =>
   })
 
 describe('managed traffic scheduler', () => {
+  it('pulls a randomized initial timer forward when activity already exists', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    let attempts = 0
+    const scheduler = createScheduler(clock, {
+      random: () => 0.9,
+      report: async () => {
+        attempts += 1
+        return { status: 'acknowledged', sequence: 1 }
+      },
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    assert.equal(transitions.at(-1).nextAttemptAt, 27_500)
+    assert.equal(scheduler.notifyActivity(), true)
+    assert.equal(transitions.at(-1).nextAttemptAt, 5_000)
+
+    await clock.advanceBy(5_000)
+    assert.equal(attempts, 1)
+    assert.equal(transitions.at(-1).outcome.sequence, 1)
+  })
+
   it('keeps the initial timer while a high-frequency render updates its callback', async () => {
     const clock = new FakeClock()
     const calls = []
@@ -193,8 +218,7 @@ describe('managed traffic scheduler', () => {
     await clock.advanceBy(5_000)
     assert.equal(scheduler.notifyActivity(), false)
     finishReport({ status: 'acknowledged', sequence: 1 })
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushPromises()
 
     assert.equal(transitions.at(-1).reason, 'activity')
     assert.equal(transitions.at(-1).nextAttemptAt, 35_000)
@@ -229,13 +253,78 @@ describe('managed traffic scheduler', () => {
     assert.equal(transitions.at(-1).nextAttemptAt, retryAt + 30_000)
   })
 
+  it('aborts a hung request and retries the frozen payload inside one minute', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    const signals = []
+    let attempts = 0
+    const scheduler = createScheduler(clock, {
+      reportTimeoutMs: 15_000,
+      report: (signal) => {
+        attempts += 1
+        signals.push(signal)
+        if (attempts === 1) return new Promise(() => undefined)
+        return Promise.resolve({ status: 'acknowledged', sequence: 4 })
+      },
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    await clock.advanceBy(5_000)
+    assert.equal(attempts, 1)
+    assert.equal(transitions.at(-1).state, 'attempting')
+
+    await clock.advanceBy(15_000)
+    assert.equal(signals[0].aborted, true)
+    assert.equal(transitions.at(-1).state, 'retrying')
+    assert.equal(transitions.at(-1).errorCode, 'timeout')
+    assert.equal(transitions.at(-1).durationMs, 15_000)
+    assert.equal(transitions.at(-1).nextAttemptAt, 31_250)
+
+    await clock.advanceBy(11_250)
+    assert.equal(attempts, 2)
+    assert.equal(transitions.at(-1).outcome.sequence, 4)
+    assert.ok(clock.nowMs < 60_000)
+  })
+
+  it('ignores a late completion after the request deadline', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    let finishReport
+    const scheduler = createScheduler(clock, {
+      reportTimeoutMs: 15_000,
+      report: () =>
+        new Promise((resolve) => {
+          finishReport = resolve
+        }),
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    await clock.advanceBy(20_000)
+    const retryAt = transitions.at(-1).nextAttemptAt
+    assert.equal(transitions.at(-1).errorCode, 'timeout')
+
+    finishReport({ status: 'acknowledged', sequence: 99 })
+    await flushPromises()
+
+    assert.equal(transitions.at(-1).state, 'retrying')
+    assert.equal(transitions.at(-1).nextAttemptAt, retryAt)
+    assert.equal(
+      transitions.some((transition) => transition.outcome?.sequence === 99),
+      false,
+    )
+  })
+
   it('cancels a pending timer and never schedules after an in-flight stop', async () => {
     const clock = new FakeClock()
     let calls = 0
     let finishReport
+    let reportSignal
     const scheduler = createScheduler(clock, {
-      report: () => {
+      report: (signal) => {
         calls += 1
+        reportSignal = signal
         return new Promise((resolve) => {
           finishReport = resolve
         })
@@ -246,9 +335,9 @@ describe('managed traffic scheduler', () => {
     await clock.advanceBy(5_000)
     assert.equal(calls, 1)
     scheduler.stop()
+    assert.equal(reportSignal.aborted, true)
     finishReport({ status: 'acknowledged', sequence: 1 })
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushPromises()
     assert.equal(clock.tasks.size, 0)
     assert.equal(scheduler.isRunning(), false)
     assert.equal(scheduler.notifyActivity(), false)
