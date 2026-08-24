@@ -5,7 +5,7 @@ use clash_verge_logging::{Type, logging};
 use gethostname::gethostname;
 use network_interface::NetworkInterface;
 use serde_yaml_ng::Mapping;
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 use std::net::TcpListener;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
