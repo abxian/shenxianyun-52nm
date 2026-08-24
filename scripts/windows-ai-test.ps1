@@ -26,6 +26,41 @@ function Read-JsonFile {
     return Get-Content -Raw -Encoding UTF8 -Path $Path | ConvertFrom-Json
 }
 
+function ConvertTo-UtcDateTime {
+    param([Parameter(Mandatory = $true)]$Value)
+    if ($Value -is [DateTimeOffset]) {
+        return $Value.UtcDateTime
+    }
+    if ($Value -is [DateTime]) {
+        return $Value.ToUniversalTime()
+    }
+    return ([DateTimeOffset]::Parse(
+        [string]$Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    )).UtcDateTime
+}
+
+function Select-DevelopmentRun {
+    param(
+        [Parameter(Mandatory = $true)]$RunsJson,
+        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][DateTime]$NotBeforeUtc
+    )
+    # Windows PowerShell 5.1 preserves a top-level JSON array as one pipeline
+    # object. Pipe the parsed value again so each workflow run is filtered as
+    # an individual object instead of casting an Object[] createdAt to DateTime.
+    $parsedRuns = $RunsJson | ConvertFrom-Json
+    $runs = @($parsedRuns | ForEach-Object { $_ })
+    return $runs |
+        Where-Object {
+            $_.headSha -eq $Commit -and
+            (ConvertTo-UtcDateTime -Value $_.createdAt) -ge $NotBeforeUtc
+        } |
+        Sort-Object { ConvertTo-UtcDateTime -Value $_.createdAt } -Descending |
+        Select-Object -First 1
+}
+
 function Get-EffectiveRunId {
     if ($RunId) {
         return $RunId
@@ -364,6 +399,45 @@ if ($Mode -eq "SelfTest") {
     if (-not $orderGateRejected) {
         throw "Self-test failed: Record gate accepted an out-of-order case."
     }
+    $workflowCommit = "0123456789abcdef0123456789abcdef01234567"
+    $workflowRuns = @(
+        [PSCustomObject]@{
+            databaseId = 100
+            createdAt = "2026-08-25T00:00:00Z"
+            headSha = $workflowCommit
+            status = "completed"
+            url = "https://example.invalid/actions/runs/100"
+        },
+        [PSCustomObject]@{
+            databaseId = 101
+            createdAt = "2026-08-25T00:02:00Z"
+            headSha = "ffffffffffffffffffffffffffffffffffffffff"
+            status = "in_progress"
+            url = "https://example.invalid/actions/runs/101"
+        },
+        [PSCustomObject]@{
+            databaseId = 102
+            createdAt = "2026-08-25T00:03:00Z"
+            headSha = $workflowCommit
+            status = "in_progress"
+            url = "https://example.invalid/actions/runs/102"
+        },
+        [PSCustomObject]@{
+            databaseId = 103
+            createdAt = "2026-08-25T00:04:00Z"
+            headSha = $workflowCommit
+            status = "queued"
+            url = "https://example.invalid/actions/runs/103"
+        }
+    )
+    $workflowRunsJson = ConvertTo-Json -InputObject $workflowRuns -Compress
+    $selectedWorkflowRun = Select-DevelopmentRun `
+        -RunsJson $workflowRunsJson `
+        -Commit $workflowCommit `
+        -NotBeforeUtc ([DateTimeOffset]::Parse("2026-08-25T00:01:00Z").UtcDateTime)
+    if (-not $selectedWorkflowRun -or $selectedWorkflowRun.databaseId -ne 103) {
+        throw "Self-test failed: Build did not select the newest matching workflow run from a JSON array."
+    }
     $installerSelfTestDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("windows-ai-installer-{0}" -f [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $installerSelfTestDirectory | Out-Null
     try {
@@ -522,11 +596,7 @@ if ($Mode -eq "Build") {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to read Development Test runs."
     }
-    $runs = @($runsJson | ConvertFrom-Json)
-    $candidate = $runs |
-        Where-Object { $_.headSha -eq $state.commit -and ([DateTime]$_.createdAt).ToUniversalTime() -ge $dispatchStarted } |
-        Sort-Object { [DateTime]$_.createdAt } -Descending |
-        Select-Object -First 1
+    $candidate = Select-DevelopmentRun -RunsJson $runsJson -Commit $state.commit -NotBeforeUtc $dispatchStarted
     if (-not $candidate) {
         throw "Workflow dispatched, but no run matched commit $($state.commit). Retry -Mode Build shortly."
     }
