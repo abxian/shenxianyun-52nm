@@ -5,7 +5,7 @@
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
   "targetBranch": "codex/commercial-canary-20260824",
-  "requiredAncestor": "d77be16a5a2e5fa905b06c208660f304bd4f8891",
+  "requiredAncestor": "532243561a435dccbbbd7895fb1b8b6200438068",
   "developmentWorkflow": "dev.yml",
   "automatedChecks": [
     {
