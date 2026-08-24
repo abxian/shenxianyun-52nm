@@ -82,8 +82,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 脚本只触发仓库 `Development Test` 的 Windows x64 项，等待 Actions 完成并将临时 EXE
-下载到本机忽略目录。Build 会再次强校验全部自动项为 pass，并核对 Actions HEAD、唯一
-Windows EXE 的大小和 GitHub SHA-256；任一不一致都会中止。该构件不是正式发布，不得
+下载到本机忽略目录。Development 使用 `upload-artifact@v7` 的 `archive:false` 原始文件
+模式，Build 会从已认证 artifact URL 直接保存 EXE（不把它误当 ZIP），再次强校验全部
+自动项为 pass，并核对 Actions HEAD、唯一 Windows EXE 的大小、GitHub SHA-256 和 PE
+`MZ` 文件头；任一不一致都会中止。该构件不是正式发布，不得
 传播或上传到其他渠道。
 
 ### C. 执行 Windows 真机用例

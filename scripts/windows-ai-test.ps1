@@ -52,6 +52,57 @@ function Assert-CommandExists {
     }
 }
 
+function Save-GitHubArtifactFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$DownloadUrl,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+    # upload-artifact@v7 with archive:false serves the original file from the
+    # artifact download URL. `gh run download` still assumes a ZIP and rejects
+    # this valid response, so download the authenticated binary directly.
+    $githubToken = (& gh auth token | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $githubToken) {
+        throw "GitHub CLI authentication token could not be acquired."
+    }
+    $headers = @{
+        Authorization = "Bearer $githubToken"
+        Accept = "application/vnd.github+json"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $DownloadUrl -Headers $headers -OutFile $DestinationPath -MaximumRedirection 10 | Out-Null
+    }
+    finally {
+        $headers = $null
+        $githubToken = $null
+    }
+}
+
+function Assert-WindowsInstallerFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int64]$ExpectedSize,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    $installer = Get-Item -LiteralPath $Path
+    $installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
+    if ($installer.Length -ne $ExpectedSize -or $installerSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "Downloaded installer size or SHA-256 does not match GitHub artifact metadata."
+    }
+    $stream = [System.IO.File]::OpenRead($installer.FullName)
+    try {
+        $firstByte = $stream.ReadByte()
+        $secondByte = $stream.ReadByte()
+    }
+    finally {
+        $stream.Dispose()
+    }
+    if ($firstByte -ne 0x4d -or $secondByte -ne 0x5a) {
+        throw "Downloaded artifact is not a Windows PE executable."
+    }
+    return $installerSha256
+}
+
 function Assert-SafeText {
     param([Parameter(Mandatory = $true)][string]$Text)
     $patterns = @(
@@ -313,6 +364,35 @@ if ($Mode -eq "SelfTest") {
     if (-not $orderGateRejected) {
         throw "Self-test failed: Record gate accepted an out-of-order case."
     }
+    $installerSelfTestDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("windows-ai-installer-{0}" -f [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $installerSelfTestDirectory | Out-Null
+    try {
+        $validInstallerPath = Join-Path $installerSelfTestDirectory "valid.exe"
+        [System.IO.File]::WriteAllBytes($validInstallerPath, [byte[]](0x4d, 0x5a, 0x00, 0x01))
+        $validDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $validInstallerPath).Hash.ToLowerInvariant()
+        $verifiedDigest = Assert-WindowsInstallerFile -Path $validInstallerPath -ExpectedSize 4 -ExpectedSha256 $validDigest
+        if ($verifiedDigest -ne $validDigest) {
+            throw "Self-test failed: installer digest verification changed the digest."
+        }
+        $invalidInstallerPath = Join-Path $installerSelfTestDirectory "invalid.exe"
+        [System.IO.File]::WriteAllBytes($invalidInstallerPath, [byte[]](0x50, 0x4b, 0x03, 0x04))
+        $invalidDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $invalidInstallerPath).Hash.ToLowerInvariant()
+        $peGateRejected = $false
+        try {
+            Assert-WindowsInstallerFile -Path $invalidInstallerPath -ExpectedSize 4 -ExpectedSha256 $invalidDigest | Out-Null
+        }
+        catch {
+            $peGateRejected = $true
+        }
+        if (-not $peGateRejected) {
+            throw "Self-test failed: installer gate accepted a non-PE file."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $installerSelfTestDirectory) {
+            [System.IO.Directory]::Delete($installerSelfTestDirectory, $true)
+        }
+    }
     Write-Host "Windows AI verdict self-test passed." -ForegroundColor Green
     exit 0
 }
@@ -475,22 +555,19 @@ if ($Mode -eq "Build") {
     if (-not $artifact.digest -or -not $artifact.digest.StartsWith("sha256:")) {
         throw "Development artifact is missing a GitHub SHA-256 digest."
     }
+    if (-not $artifact.archive_download_url) {
+        throw "Development artifact is missing its authenticated download URL."
+    }
+    $artifactFileName = [System.IO.Path]::GetFileName([string]$artifact.name)
+    if ($artifactFileName -ne [string]$artifact.name) {
+        throw "Development artifact name contains an invalid path."
+    }
     $installerDirectory = Join-Path $effectiveRunDirectory "windows-installer-local-only"
     New-Item -ItemType Directory -Force -Path $installerDirectory | Out-Null
-    & gh run download $candidate.databaseId --repo $CaseSpec.repository --dir $installerDirectory
-    if ($LASTEXITCODE -ne 0) {
-        throw "Actions passed, but the Windows artifact download failed."
-    }
-    $installers = @(Get-ChildItem -Path $installerDirectory -Recurse -File -Filter "*.exe")
-    if ($installers.Count -ne 1) {
-        throw "Artifact download did not contain exactly one Windows installer."
-    }
-    $installer = $installers[0]
-    $installerSha256 = (Get-FileHash -Algorithm SHA256 -Path $installer.FullName).Hash.ToLowerInvariant()
+    $installerPath = Join-Path $installerDirectory $artifactFileName
+    Save-GitHubArtifactFile -DownloadUrl ([string]$artifact.archive_download_url) -DestinationPath $installerPath
     $githubSha256 = $artifact.digest.Substring(7).ToLowerInvariant()
-    if ($installer.Length -ne [int64]$artifact.size_in_bytes -or $installerSha256 -ne $githubSha256) {
-        throw "Downloaded installer size or SHA-256 does not match GitHub artifact metadata."
-    }
+    $installerSha256 = Assert-WindowsInstallerFile -Path $installerPath -ExpectedSize ([int64]$artifact.size_in_bytes) -ExpectedSha256 $githubSha256
     $state.artifactName = [string]$artifact.name
     $state.artifactSize = [int64]$artifact.size_in_bytes
     $state.artifactSha256 = $installerSha256
