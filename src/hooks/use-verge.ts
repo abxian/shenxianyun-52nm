@@ -19,25 +19,28 @@ export const useVerge = () => {
     staleTime: 5000,
   })
 
-  const mutateVerge = (
-    updaterOrData?:
-      | IVergeConfig
-      | ((prev: IVergeConfig | undefined) => IVergeConfig | undefined)
-      | undefined,
-    _revalidate?: boolean,
-  ) => {
-    if (updaterOrData === undefined) {
-      void refetch()
-      return
-    }
-    if (typeof updaterOrData === 'function') {
-      const prev = qc.getQueryData<IVergeConfig>(['getVergeConfig'])
-      const next = updaterOrData(prev)
-      qc.setQueryData(['getVergeConfig'], next)
-    } else {
-      qc.setQueryData(['getVergeConfig'], updaterOrData)
-    }
-  }
+  const mutateVerge = useCallback(
+    (
+      updaterOrData?:
+        | IVergeConfig
+        | ((prev: IVergeConfig | undefined) => IVergeConfig | undefined)
+        | undefined,
+      _revalidate?: boolean,
+    ) => {
+      if (updaterOrData === undefined) {
+        void refetch()
+        return
+      }
+      if (typeof updaterOrData === 'function') {
+        const prev = qc.getQueryData<IVergeConfig>(['getVergeConfig'])
+        const next = updaterOrData(prev)
+        qc.setQueryData(['getVergeConfig'], next)
+      } else {
+        qc.setQueryData(['getVergeConfig'], updaterOrData)
+      }
+    },
+    [qc, refetch],
+  )
 
   const patchVerge = useCallback(
     async (value: Partial<IVergeConfig>) => {

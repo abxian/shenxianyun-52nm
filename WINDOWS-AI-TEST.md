@@ -23,18 +23,24 @@
 
 ## 2. 首次克隆
 
-在 PowerShell 中执行：
+每一轮真机验收都使用新的空目录，避免旧 checkout 的 CRLF 行尾或本机测试结果污染
+新 commit。在 PowerShell 中执行：
 
 ```powershell
-git clone --branch codex/commercial-canary-20260824 --single-branch `
+git -c core.autocrlf=false clone `
+  --branch codex/commercial-canary-20260824 --single-branch `
   https://github.com/abxian/shenxianyun-52nm.git
 cd shenxianyun-52nm
 
+git config core.autocrlf false
 git status --short
 git branch --show-current
+git ls-files --eol | Select-String 'w/(crlf|mixed)'
 ```
 
-要求：工作树干净，分支为 `codex/commercial-canary-20260824`。
+要求：工作树干净，分支为 `codex/commercial-canary-20260824`，最后一条行尾检查无输出。
+仓库用 `.gitattributes` 固定源码为 LF；不要在旧目录里用批量格式化伪装修复，也不要把
+行尾变化提交回仓库。
 
 运行环境：
 
@@ -96,6 +102,12 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 失败摘要要写清楚“操作步骤、实际现象、是否稳定复现、回滚结果”，但不得复制原始日志。
 原始日志只保留在本机，主审阅任务确有需要时再指定最小脱敏片段。
+
+`WIN-TRAFFIC-001` 允许读取本机 localStorage 的
+`shenxianyun.managedTrafficStatus.v1`。该记录只包含状态、时间、失败分类、HTTP 状态和
+确认序号，不含提取码、Token、URL、设备标识或流量值。Issue 只写
+`scheduled/attempting/acknowledged/retrying`、确认序号是否推进和脱敏失败分类，不复制
+整个 localStorage 或网络请求。
 
 随时查看进度：
 

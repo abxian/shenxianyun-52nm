@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import { closeAllConnections } from 'tauri-plugin-mihomo-api'
 
 import { useVerge } from '@/hooks/use-verge'
@@ -44,39 +44,45 @@ export const useSystemProxyState = () => {
   const pendingRef = useRef<boolean | null>(null)
   const busyRef = useRef(false)
 
-  const toggleSystemProxy = async (enabled: boolean) => {
-    mutateVerge(
-      (prev) => (prev ? { ...prev, enable_system_proxy: enabled } : prev),
-      false,
-    )
-    pendingRef.current = enabled
+  const toggleSystemProxy = useCallback(
+    async (enabled: boolean) => {
+      mutateVerge(
+        (prev) => (prev ? { ...prev, enable_system_proxy: enabled } : prev),
+        false,
+      )
+      pendingRef.current = enabled
 
-    if (busyRef.current) return
-    busyRef.current = true
+      if (busyRef.current) return
+      busyRef.current = true
 
-    try {
-      while (pendingRef.current !== null) {
-        const target = pendingRef.current
-        pendingRef.current = null
-        await patchVerge({ enable_system_proxy: target })
-        if (!target && verge?.auto_close_connection) {
-          await closeAllConnections().catch(() => {})
+      try {
+        while (pendingRef.current !== null) {
+          const target = pendingRef.current
+          pendingRef.current = null
+          await patchVerge({ enable_system_proxy: target })
+          if (!target && verge?.auto_close_connection) {
+            await closeAllConnections().catch(() => {})
+          }
         }
+      } finally {
+        busyRef.current = false
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['getSystemProxy'] }),
+          queryClient.invalidateQueries({ queryKey: ['getAutotemProxy'] }),
+        ])
       }
-    } finally {
-      busyRef.current = false
-      await Promise.all([
+    },
+    [mutateVerge, patchVerge, verge?.auto_close_connection],
+  )
+
+  const invalidateProxyState = useCallback(
+    () =>
+      Promise.all([
         queryClient.invalidateQueries({ queryKey: ['getSystemProxy'] }),
         queryClient.invalidateQueries({ queryKey: ['getAutotemProxy'] }),
-      ])
-    }
-  }
-
-  const invalidateProxyState = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['getSystemProxy'] }),
-      queryClient.invalidateQueries({ queryKey: ['getAutotemProxy'] }),
-    ])
+      ]),
+    [],
+  )
 
   return {
     indicator,

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-24.1",
+  "caseVersion": "2026-08-24.2",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
@@ -34,7 +34,7 @@
     },
     {
       "id": "AUTO-TRAFFIC",
-      "title": "托管流量幂等计数测试",
+      "title": "托管流量幂等计数与高频渲染调度测试",
       "executable": "pnpm",
       "arguments": ["test:managed-traffic"]
     },
@@ -144,9 +144,10 @@
       "steps": [
         "产生少量可控上行和下行流量",
         "检查客户端累计流量增长",
+        "在 60 秒内检查本机脱敏诊断 shenxianyun.managedTrafficStatus.v1 的 state/outcome 变为 acknowledged，且 acknowledgedSequence 比测试前增加",
         "后端已灰度时检查后台设备和上下行统计"
       ],
-      "expected": "客户端上下行累计增长；后端已灰度时同一物理设备只占一个统一设备名额。",
+      "expected": "客户端上下行累计增长；脱敏诊断显示 acknowledged 且 sequence 推进；后端已灰度时同一物理设备只占一个统一设备名额并产生流量统计。",
       "rollback": "停止测试流量并断开节点；后端未灰度时将服务端部分标为 blocked。"
     },
     {
