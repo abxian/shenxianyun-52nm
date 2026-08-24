@@ -66,7 +66,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 脚本会输出 `Run ID`。记住该值；不填写 `-RunId` 时，后续命令默认使用最近一次运行。
 自动阶段会执行锁定依赖安装、类型、格式、Lint、流量、导入、刷新、更新通道、品牌和
-Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵，但执行器最终返回非零；
+受管订阅名称隔离、Git 补丁检查。某一项失败后仍会继续其余检查，以获得完整矩阵，但
+执行器最终返回非零；
 此时必须停止 Build/真机步骤并把该轮作为 FAIL，不能继续生成 PASS。
 
 ### B. 构建并下载 Windows x64 临时安装包
@@ -145,3 +146,8 @@ Verdict: PASS / FAIL / BLOCKED
 ```
 
 主审阅任务收到 Issue URL 后，通过 GitHub 拉取结构化报告和 Actions 结果进行复核。
+
+`WIN-REINSTALL-ID-001` 的 Windows 代理只比较重装前后的稳定设备键是否相同，禁止记录、
+显示或上传键值本身。Windows 侧不需要、也不得索取后台数据库凭据；重新导入和新令牌
+心跳通过后可把客户端部分记为 `pass`，并写明 canonical device 与设备名额仍待主审任务
+通过授权运维通道只读核验。缺少后台通道本身不再作为 Windows 用例的 blocked 原因。

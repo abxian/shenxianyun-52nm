@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-24.3",
+  "caseVersion": "2026-08-24.4",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
@@ -63,6 +63,12 @@
       "arguments": ["brand:test"]
     },
     {
+      "id": "AUTO-MANAGED-PRESENTATION",
+      "title": "受管订阅名称与提取码隔离测试",
+      "executable": "pnpm",
+      "arguments": ["test:managed-subscription"]
+    },
+    {
       "id": "AUTO-DIFF",
       "title": "Git 补丁空白错误检查",
       "executable": "git",
@@ -93,9 +99,11 @@
       "requires": ["应用已启动"],
       "steps": [
         "检查应用名称和图标",
-        "检查关于或更新界面未指向旧神仙云发布通道"
+        "鼠标悬停托盘图标，确认提示首行是吾爱云且不显示当前配置名、提取码或 Clash Verge",
+        "打开托盘配置子菜单，确认官方配置显示为吾爱云官方订阅且不显示提取码",
+        "检查关于、更新提示和系统通知不显示 Clash Verge，且更新通道未指向旧神仙云发布通道"
       ],
-      "expected": "界面品牌为吾爱云，更新通道保持 52nm 仓库隔离。",
+      "expected": "主窗口、托盘、系统通知和更新界面品牌均为吾爱云；托盘提示不含配置名，官方配置菜单不含提取码；更新通道保持 52nm 仓库隔离。",
       "rollback": "无。"
     },
     {
@@ -190,18 +198,15 @@
       "id": "WIN-REINSTALL-ID-001",
       "title": "重装后的统一设备身份",
       "risk": "high",
-      "requires": [
-        "专用测试虚拟机或可回滚快照",
-        "52nm 商业化后端已灰度",
-        "同一个专用测试账号"
-      ],
+      "requires": ["专用测试虚拟机或可回滚快照", "同一个专用测试账号"],
       "steps": [
-        "记录后台脱敏设备记录和名额数",
+        "在卸载前读取本机稳定设备键并只记录是否成功，不记录或上传原值",
         "卸载并重装同一候选构件",
         "重新导入同一测试账号",
-        "复核后台统一设备记录"
+        "再次读取稳定设备键，只记录与卸载前相同或不同，不记录或上传原值",
+        "确认新令牌心跳成功，并在 Issue 中明确写后台 canonical device 聚合待主审任务只读核验"
       ],
-      "expected": "安装实例可变化，但 canonical device 不新增物理设备名额。",
+      "expected": "Windows 侧通过条件：重装前后稳定设备键比较结果为相同、重新导入成功且新令牌心跳成功；最终发布条件：主审任务通过授权只读聚合确认多个安装实例收敛到同一 canonical device 且未新增物理设备名额。Windows AI 无后台只读通道不构成 blocked，也不得请求后台凭据或声称已经核验数据库。",
       "rollback": "恢复虚拟机快照或卸载测试客户端；任一前置条件缺失时标为 blocked，不得在日常生产电脑强行执行。"
     }
   ],
