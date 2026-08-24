@@ -142,6 +142,93 @@ describe('managed traffic scheduler', () => {
     assert.equal(transitions.at(-1).nextAttemptAt, 20_000)
   })
 
+  it('pulls a long success timer forward when new traffic is observed', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    let attempts = 0
+    const scheduler = createScheduler(clock, {
+      report: async () => {
+        attempts += 1
+        return { status: 'acknowledged', sequence: attempts }
+      },
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    await clock.advanceBy(5_000)
+    assert.equal(attempts, 1)
+    assert.equal(transitions.at(-1).nextAttemptAt, 305_000)
+
+    await clock.advanceBy(1_000)
+    assert.equal(scheduler.notifyActivity(), true)
+    assert.equal(transitions.at(-1).reason, 'activity')
+    assert.equal(transitions.at(-1).nextAttemptAt, 35_000)
+    assert.equal(scheduler.notifyActivity(), false)
+
+    await clock.advanceBy(28_000)
+    assert.equal(attempts, 1)
+    await clock.advanceBy(1_000)
+    assert.equal(attempts, 2)
+    assert.equal(transitions.at(-1).outcome.sequence, 2)
+    assert.equal(transitions.at(-1).nextAttemptAt, 335_000)
+
+    await clock.advanceBy(1_000)
+    assert.equal(scheduler.notifyActivity(), true)
+    assert.equal(transitions.at(-1).nextAttemptAt, 65_000)
+  })
+
+  it('coalesces activity that arrives while a report is in flight', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    let finishReport
+    const scheduler = createScheduler(clock, {
+      report: () =>
+        new Promise((resolve) => {
+          finishReport = resolve
+        }),
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    await clock.advanceBy(5_000)
+    assert.equal(scheduler.notifyActivity(), false)
+    finishReport({ status: 'acknowledged', sequence: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    assert.equal(transitions.at(-1).reason, 'activity')
+    assert.equal(transitions.at(-1).nextAttemptAt, 35_000)
+  })
+
+  it('does not let activity bypass failure backoff', async () => {
+    const clock = new FakeClock()
+    const transitions = []
+    let attempts = 0
+    const scheduler = createScheduler(clock, {
+      report: async () => {
+        attempts += 1
+        if (attempts === 1) {
+          throw new ManagedTrafficReportError('network')
+        }
+        return { status: 'acknowledged', sequence: 1 }
+      },
+      onTransition: (transition) => transitions.push(transition),
+    })
+
+    scheduler.start()
+    await clock.advanceBy(5_000)
+    const retryAt = transitions.at(-1).nextAttemptAt
+    assert.equal(transitions.at(-1).state, 'retrying')
+    assert.equal(scheduler.notifyActivity(), false)
+    assert.equal(transitions.at(-1).nextAttemptAt, retryAt)
+    assert.equal(clock.tasks.size, 1)
+
+    await clock.advanceBy(retryAt - clock.nowMs)
+    assert.equal(attempts, 2)
+    assert.equal(transitions.at(-1).reason, 'activity')
+    assert.equal(transitions.at(-1).nextAttemptAt, retryAt + 30_000)
+  })
+
   it('cancels a pending timer and never schedules after an in-flight stop', async () => {
     const clock = new FakeClock()
     let calls = 0
@@ -164,5 +251,6 @@ describe('managed traffic scheduler', () => {
     await Promise.resolve()
     assert.equal(clock.tasks.size, 0)
     assert.equal(scheduler.isRunning(), false)
+    assert.equal(scheduler.notifyActivity(), false)
   })
 })

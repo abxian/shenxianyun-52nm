@@ -3,8 +3,32 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { applySiteProfile } from './site-profile.mjs'
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+)
+
+test('keeps native tray version text behind runtime brand replacement', () => {
+  const brandSource = fs.readFileSync(
+    path.join(repositoryRoot, 'src-tauri/src/utils/brand.rs'),
+    'utf8',
+  )
+  const traySource = fs.readFileSync(
+    path.join(repositoryRoot, 'src-tauri/src/core/tray/mod.rs'),
+    'utf8',
+  )
+
+  assert.match(brandSource, /\.replace\("Verge", app_name\)/)
+  assert.match(traySource, /build_tray_version_label\(&texts\.verge_version/)
+  assert.doesNotMatch(
+    traySource,
+    /format!\("\{\} \{version\}", texts\.verge_version\)/,
+  )
+})
 
 test('applies a copied brand without retaining 52nm endpoints', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'site-profile-'))

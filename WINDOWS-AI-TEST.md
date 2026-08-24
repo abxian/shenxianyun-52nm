@@ -111,6 +111,10 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 `scheduled/attempting/acknowledged/retrying`、确认序号是否推进和脱敏失败分类，不复制
 整个 localStorage 或网络请求。
 
+必须先读取 `acknowledgedSequence` 基线，再产生少量受控双向流量并开始 60 秒计时；等待
+期间不得重启应用、切换账号或重新导入来人为重建调度器。通过条件是客户端累计双向增长，
+并在同一运行周期内看到新的 `acknowledged` 且确认序号严格大于基线。
+
 客户端收到 API 确认不等于已经直接核验生产数据库。Windows Issue 必须如实写明是否
 存在服务端聚合证据；没有时写“待主审任务核验”，不得用“接口写入语义”推断
 `traffic_counters` 或 `traffic_daily` 已有记录。主审任务会在拉取 Issue 后通过授权的

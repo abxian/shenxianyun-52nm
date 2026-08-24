@@ -930,6 +930,9 @@ const HomePage = () => {
   const lastReportedTrafficRef = useRef({ upload: 0, download: 0 })
   const trafficReportRetryAfterRef = useRef(0)
   const trafficCounterRef = useRef<ManagedTrafficCounter | null>(null)
+  const trafficSchedulerRef = useRef<ReturnType<
+    typeof createManagedTrafficScheduler
+  > | null>(null)
   const pendingManagedTrafficRef = useRef<
     ReturnType<typeof managedTrafficPayload> | undefined
   >(undefined)
@@ -2241,13 +2244,17 @@ const HomePage = () => {
   }, [currentCode, running, syncExpiresAt, updateState])
 
   useEffect(() => {
-    trafficTotalsRef.current = {
+    const totals = {
       upload: connectionResponse.data?.uploadTotal ?? 0,
       download: connectionResponse.data?.downloadTotal ?? 0,
     }
+    trafficTotalsRef.current = totals
     const counter = trafficCounterRef.current
     if (!counter) return
-    const observed = observeManagedTraffic(counter, trafficTotalsRef.current)
+    const hasNewTraffic =
+      totals.upload > counter.observed.upload ||
+      totals.download > counter.observed.download
+    const observed = observeManagedTraffic(counter, totals)
     // 核心累计值回退通常表示核心重启。旧累计值必须先成功补报，不能被新基线覆盖。
     if (observed.reset) return
     trafficCounterRef.current = observed.counter
@@ -2255,13 +2262,14 @@ const HomePage = () => {
       MANAGED_TRAFFIC_STORAGE_KEY,
       JSON.stringify(observed.counter),
     )
+    if (hasNewTraffic) trafficSchedulerRef.current?.notifyActivity()
   }, [
     connectionResponse.data?.downloadTotal,
     connectionResponse.data?.uploadTotal,
   ])
 
   useEffect(() => {
-    if (!running || !currentCode) {
+    if (!running || !currentCode || !managedAuthReady) {
       lastReportedTrafficRef.current = trafficTotalsRef.current
       return
     }
@@ -2289,9 +2297,15 @@ const HomePage = () => {
       },
       onTransition: persistManagedTrafficDiagnostic,
     })
+    trafficSchedulerRef.current = scheduler
     scheduler.start()
-    return () => scheduler.stop()
-  }, [currentCode, running])
+    return () => {
+      if (trafficSchedulerRef.current === scheduler) {
+        trafficSchedulerRef.current = null
+      }
+      scheduler.stop()
+    }
+  }, [currentCode, managedAuthReady, running])
 
   // 每个客户端进程启动后刷新一次订阅；后续只在已连接时轻量检查服务端版本。
   // 定时检查不会盲目下载整份订阅，失败时指数退避并叠加抖动，避免惊群。

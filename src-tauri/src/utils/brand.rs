@@ -6,6 +6,7 @@ pub fn native_text(text: &str, app_name: &str) -> String {
     text.replace("Clash Verge Rev", app_name)
         .replace("Clash-Verge", app_name)
         .replace("Clash Verge", app_name)
+        .replace("Verge", app_name)
 }
 
 #[cfg(test)]
@@ -14,7 +15,7 @@ mod tests {
 
     #[test]
     fn replaces_all_inherited_user_facing_brand_variants() {
-        for legacy in ["Clash Verge", "Clash Verge Rev", "Clash-Verge"] {
+        for legacy in ["Clash Verge", "Clash Verge Rev", "Clash-Verge", "Verge"] {
             let rendered = native_text(&format!("{legacy} is ready"), "吾爱云");
             assert_eq!(rendered, "吾爱云 is ready");
             assert!(!rendered.contains("Clash"));

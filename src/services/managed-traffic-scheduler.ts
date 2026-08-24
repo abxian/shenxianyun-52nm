@@ -5,6 +5,8 @@ export const TRAFFIC_REPORT_IDLE_JITTER_MS = 15_000
 export const TRAFFIC_REPORT_INTERVAL_MS = 300_000
 export const TRAFFIC_REPORT_JITTER_MS = 60_000
 export const TRAFFIC_REPORT_MAX_BACKOFF_MS = 1_800_000
+export const TRAFFIC_REPORT_ACTIVITY_DELAY_MS = 5_000
+export const TRAFFIC_REPORT_ACTIVE_MIN_INTERVAL_MS = 30_000
 
 export type ManagedTrafficReportOutcome = {
   status:
@@ -44,7 +46,7 @@ export type ManagedTrafficSchedulerTransition = {
   at: number
   failureCount: number
   nextAttemptAt?: number
-  reason?: 'initial' | 'success'
+  reason?: 'activity' | 'initial' | 'success'
   outcome?: ManagedTrafficReportOutcome
   errorCode?: ManagedTrafficReportFailureCode
   httpStatus?: number
@@ -89,8 +91,12 @@ export const createManagedTrafficScheduler = (
 
   const report = options.report
   let timer: TimerHandle | undefined
+  let nextAttemptAt: number | undefined
   let stopped = true
   let failures = 0
+  let inFlight = false
+  let lastAttemptAt: number | undefined
+  let activityPending = false
 
   const schedule = (
     delayMs: number,
@@ -101,33 +107,52 @@ export const createManagedTrafficScheduler = (
   ) => {
     const delay = normalizeDelay(delayMs)
     const scheduledAt = now()
+    if (timer !== undefined) clearTimer(timer)
+    nextAttemptAt = scheduledAt + delay
     timer = setTimer(() => {
       timer = undefined
+      nextAttemptAt = undefined
       void run()
     }, delay)
     emit({
       ...transition,
       at: scheduledAt,
       failureCount: failures,
-      nextAttemptAt: scheduledAt + delay,
+      nextAttemptAt,
     })
   }
 
   const run = async () => {
     if (stopped) return
-    emit({ state: 'attempting', at: now(), failureCount: failures })
+    const attemptedAt = now()
+    lastAttemptAt = attemptedAt
+    inFlight = true
+    emit({ state: 'attempting', at: attemptedAt, failureCount: failures })
     try {
       const outcome = await report()
       if (stopped) return
       failures = 0
       options.takeRetryAfterMs?.()
-      const delay =
+      const normalDelay =
         outcome.status === 'inactive' || outcome.status === 'no_delta'
           ? TRAFFIC_REPORT_IDLE_INTERVAL_MS +
             Math.floor(random() * TRAFFIC_REPORT_IDLE_JITTER_MS)
           : TRAFFIC_REPORT_INTERVAL_MS +
             Math.floor(random() * TRAFFIC_REPORT_JITTER_MS)
-      schedule(delay, { state: 'scheduled', reason: 'success', outcome })
+      const pendingActivity = activityPending
+      activityPending = false
+      const activeDelay = Math.max(
+        TRAFFIC_REPORT_ACTIVITY_DELAY_MS,
+        TRAFFIC_REPORT_ACTIVE_MIN_INTERVAL_MS - (now() - attemptedAt),
+      )
+      schedule(
+        Math.min(normalDelay, pendingActivity ? activeDelay : normalDelay),
+        {
+          state: 'scheduled',
+          reason: pendingActivity ? 'activity' : 'success',
+          outcome,
+        },
+      )
     } catch (error) {
       if (stopped) return
       failures += 1
@@ -144,6 +169,8 @@ export const createManagedTrafficScheduler = (
         errorCode: reportError?.code || 'network',
         httpStatus: reportError?.httpStatus,
       })
+    } finally {
+      inFlight = false
     }
   }
 
@@ -161,11 +188,39 @@ export const createManagedTrafficScheduler = (
     stop() {
       if (stopped) return
       stopped = true
+      activityPending = false
       if (timer !== undefined) {
         clearTimer(timer)
         timer = undefined
       }
+      nextAttemptAt = undefined
       emit({ state: 'stopped', at: now(), failureCount: failures })
+    },
+    notifyActivity() {
+      if (stopped) return false
+      if (inFlight || failures > 0) {
+        // The current/frozen payload might not contain this newer sample. Keep
+        // the activity pending without shortening an in-flight request/backoff.
+        activityPending = true
+        return false
+      }
+
+      const requestedAt = now()
+      const earliestByRateLimit =
+        lastAttemptAt === undefined
+          ? requestedAt + TRAFFIC_REPORT_ACTIVITY_DELAY_MS
+          : Math.max(
+              requestedAt + TRAFFIC_REPORT_ACTIVITY_DELAY_MS,
+              lastAttemptAt + TRAFFIC_REPORT_ACTIVE_MIN_INTERVAL_MS,
+            )
+      if (nextAttemptAt !== undefined && nextAttemptAt <= earliestByRateLimit) {
+        return false
+      }
+      schedule(earliestByRateLimit - requestedAt, {
+        state: 'scheduled',
+        reason: 'activity',
+      })
+      return true
     },
     isRunning() {
       return !stopped

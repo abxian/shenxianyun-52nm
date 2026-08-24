@@ -85,3 +85,11 @@ jobs:
       - name: Run managed subscription presentation tests
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm test:managed-subscription
+
+      - name: Run managed traffic scheduler tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm test:managed-traffic
+
+      - name: Run commercial brand boundary tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm brand:test

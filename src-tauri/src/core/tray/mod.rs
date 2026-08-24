@@ -10,7 +10,7 @@ use crate::{
     config::Config,
     feat, logging,
     module::lightweight::is_in_lightweight_mode,
-    utils::{dirs::find_target_icons, help},
+    utils::{brand, dirs::find_target_icons, help},
 };
 use clash_verge_limiter::{Limiter, SystemClock, SystemLimiter};
 use clash_verge_logging::logging_error;
@@ -445,6 +445,14 @@ fn build_tray_tooltip(
     format!("{app_name} {version}\n{system_proxy_text}: {system_proxy_state}\n{tun_text}: {tun_state}")
 }
 
+fn build_tray_version_label(
+    localized_label: &str,
+    app_name: &str,
+    version: impl std::fmt::Display,
+) -> std::string::String {
+    format!("{} {version}", brand::native_text(localized_label, app_name))
+}
+
 fn tray_profile_label(
     profile_uid: &str,
     profile_name: &str,
@@ -843,7 +851,7 @@ async fn create_tray_menu(
     let app_version = &MenuItem::with_id(
         app_handle,
         MenuIds::VERGE_VERSION,
-        format!("{} {version}", texts.verge_version),
+        build_tray_version_label(&texts.verge_version, &app_handle.package_info().name, version),
         true,
         None::<&str>,
     )?;
@@ -1052,7 +1060,15 @@ fn on_menu_event(_: &AppHandle, event: MenuEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_tray_tooltip, tray_profile_label};
+    use super::{build_tray_tooltip, build_tray_version_label, tray_profile_label};
+
+    #[test]
+    fn version_menu_uses_product_name_instead_of_the_inherited_brand() {
+        let label = build_tray_version_label("Verge 版本", "吾爱云", "2.5.34");
+
+        assert_eq!(label, "吾爱云 版本 2.5.34");
+        assert!(!label.contains("Verge"));
+    }
 
     #[test]
     fn tooltip_uses_product_name_and_never_includes_a_profile_name() {

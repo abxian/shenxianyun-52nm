@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-24.4",
+  "caseVersion": "2026-08-24.5",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
@@ -34,7 +34,7 @@
     },
     {
       "id": "AUTO-TRAFFIC",
-      "title": "托管流量幂等计数与高频渲染调度测试",
+      "title": "托管流量幂等计数、活动唤醒与限频退避测试",
       "executable": "pnpm",
       "arguments": ["test:managed-traffic"]
     },
@@ -101,9 +101,10 @@
         "检查应用名称和图标",
         "鼠标悬停托盘图标，确认提示首行是吾爱云且不显示当前配置名、提取码或 Clash Verge",
         "打开托盘配置子菜单，确认官方配置显示为吾爱云官方订阅且不显示提取码",
+        "展开托盘更多子菜单，确认版本项使用吾爱云产品名且不显示 Verge 版本",
         "检查关于、更新提示和系统通知不显示 Clash Verge，且更新通道未指向旧神仙云发布通道"
       ],
-      "expected": "主窗口、托盘、系统通知和更新界面品牌均为吾爱云；托盘提示不含配置名，官方配置菜单不含提取码；更新通道保持 52nm 仓库隔离。",
+      "expected": "主窗口、托盘提示、托盘配置与更多子菜单、系统通知和更新界面品牌均为吾爱云；托盘提示不含配置名，官方配置菜单不含提取码，版本项不含 Verge；更新通道保持 52nm 仓库隔离。",
       "rollback": "无。"
     },
     {
@@ -150,9 +151,11 @@
         "52nm 商业化后端已灰度时才可验收服务端归一统计"
       ],
       "steps": [
+        "产生流量前读取本机脱敏诊断并记录 acknowledgedSequence 基线；不得记录整个 localStorage",
         "产生少量可控上行和下行流量",
         "检查客户端累计流量增长",
         "在 60 秒内检查本机脱敏诊断 shenxianyun.managedTrafficStatus.v1 的 state/outcome 变为 acknowledged，且 acknowledgedSequence 比测试前增加",
+        "等待期间不得通过重启应用、切换账号或重新导入来人为重建调度器",
         "后端已灰度时检查后台设备和上下行统计",
         "报告必须区分客户端 API 确认与主审任务的生产表聚合核验；不得把 API 成功推断成数据库已核验"
       ],
