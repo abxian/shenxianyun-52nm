@@ -88,6 +88,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 `MZ` 文件头；任一不一致都会中止。该构件不是正式发布，不得
 传播或上传到其他渠道。
 
+Build 是可恢复操作：每次派发前先把时间标记写入本机状态，一旦取得 Actions Run ID 就
+立即持久化。命令窗口、网络或 AI 工具中断后，使用同一个 `RUN_ID` 原样重跑 Build；脚本
+会恢复同一提交下正在排队/构建的任务，或复用已成功任务及其构件，不会重复派发并取消
+健康构建。只有记录的任务已经明确失败、取消、不存在或属于其他提交时才允许派发替代任务。
+Build 使用短轮询读取状态；GitHub API 暂时不可用时会保留原 Run ID 并停止，恢复后再次
+执行同一命令即可，不要手工触发第二条 Development Test。
+
 ### C. 执行 Windows 真机用例
 
 严格按 `test-cases/windows-commercial.json` 中 `manualChecks` 的顺序测试。每项完成后

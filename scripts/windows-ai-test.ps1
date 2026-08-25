@@ -61,6 +61,127 @@ function Select-DevelopmentRun {
         Select-Object -First 1
 }
 
+function Get-DevelopmentRunDisposition {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$Commit
+    )
+    if (-not $Run -or [string]$Run.headSha -ne $Commit) {
+        return "mismatch"
+    }
+    $runStatus = ([string]$Run.status).ToLowerInvariant()
+    if ($runStatus -eq "completed") {
+        if (([string]$Run.conclusion).ToLowerInvariant() -eq "success") {
+            return "success"
+        }
+        return "replace"
+    }
+    # Conservatively keep waiting for every exact-head, non-completed state.
+    # GitHub may add intermediate statuses; dispatching another run here would
+    # cancel the healthy run through the workflow concurrency policy.
+    return "wait"
+}
+
+function Read-DevelopmentRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repository,
+        [Parameter(Mandatory = $true)][int64]$ActionsRunId,
+        [int]$MaxAttempts = 3
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt += 1) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $runJson = (& gh run view $ActionsRunId --repo $Repository --json databaseId,headSha,status,conclusion,url 2>&1 | Out-String).Trim()
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($exitCode -eq 0) {
+            try {
+                return ($runJson | ConvertFrom-Json)
+            }
+            catch {
+                if ($attempt -eq $MaxAttempts) {
+                    throw "Development Test returned invalid JSON. No replacement run was dispatched."
+                }
+            }
+        }
+        elseif ($runJson -match '(?i)(HTTP\s+404|not found)') {
+            return $null
+        }
+        elseif ($attempt -eq $MaxAttempts) {
+            throw "Development Test state could not be read after $MaxAttempts attempts. No replacement run was dispatched."
+        }
+        Write-Warning "Development Test state read attempt $attempt failed; preserving the recorded run and retrying."
+        Start-Sleep -Seconds 5
+    }
+}
+
+function Find-DevelopmentRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repository,
+        [Parameter(Mandatory = $true)][string]$Workflow,
+        [Parameter(Mandatory = $true)][string]$Branch,
+        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][DateTime]$NotBeforeUtc,
+        [int]$MaxAttempts = 3
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt += 1) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $runsJson = (& gh run list --repo $Repository --workflow $Workflow --branch $Branch --event workflow_dispatch --limit 20 --json databaseId,createdAt,headSha,status,conclusion,url 2>&1 | Out-String).Trim()
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($exitCode -eq 0) {
+            try {
+                return Select-DevelopmentRun -RunsJson $runsJson -Commit $Commit -NotBeforeUtc $NotBeforeUtc
+            }
+            catch {
+                if ($attempt -eq $MaxAttempts) {
+                    throw "Development Test run list returned invalid JSON. No replacement run was dispatched."
+                }
+            }
+        }
+        elseif ($attempt -eq $MaxAttempts) {
+            throw "Development Test run list could not be read after $MaxAttempts attempts. No replacement run was dispatched."
+        }
+        Write-Warning "Development Test run list attempt $attempt failed; retrying without dispatching."
+        Start-Sleep -Seconds 5
+    }
+}
+
+function Wait-DevelopmentRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repository,
+        [Parameter(Mandatory = $true)][int64]$ActionsRunId,
+        [Parameter(Mandatory = $true)][string]$Commit
+    )
+    while ($true) {
+        $run = Read-DevelopmentRun -Repository $Repository -ActionsRunId $ActionsRunId
+        if (-not $run) {
+            throw "Recorded Development Test no longer exists. Retry Build to dispatch a replacement."
+        }
+        $disposition = Get-DevelopmentRunDisposition -Run $run -Commit $Commit
+        if ($disposition -eq "success") {
+            return $run
+        }
+        if ($disposition -eq "replace") {
+            throw "Development Test completed with conclusion '$($run.conclusion)'. Retry Build to dispatch a replacement."
+        }
+        if ($disposition -eq "mismatch") {
+            throw "Recorded Development Test does not match the tested commit."
+        }
+        Write-Host "Development Test status: $($run.status). Rechecking in 15 seconds..."
+        Start-Sleep -Seconds 15
+    }
+}
+
 function Get-EffectiveRunId {
     if ($RunId) {
         return $RunId
@@ -438,6 +559,39 @@ if ($Mode -eq "SelfTest") {
     if (-not $selectedWorkflowRun -or $selectedWorkflowRun.databaseId -ne 103) {
         throw "Self-test failed: Build did not select the newest matching workflow run from a JSON array."
     }
+    $workflowDispositionCases = @(
+        [PSCustomObject]@{
+            name = "queued matching run"
+            run = [PSCustomObject]@{ headSha = $workflowCommit; status = "queued"; conclusion = "" }
+            expected = "wait"
+        },
+        [PSCustomObject]@{
+            name = "in-progress matching run"
+            run = [PSCustomObject]@{ headSha = $workflowCommit; status = "in_progress"; conclusion = "" }
+            expected = "wait"
+        },
+        [PSCustomObject]@{
+            name = "successful matching run"
+            run = [PSCustomObject]@{ headSha = $workflowCommit; status = "completed"; conclusion = "success" }
+            expected = "success"
+        },
+        [PSCustomObject]@{
+            name = "cancelled matching run"
+            run = [PSCustomObject]@{ headSha = $workflowCommit; status = "completed"; conclusion = "cancelled" }
+            expected = "replace"
+        },
+        [PSCustomObject]@{
+            name = "mismatched run"
+            run = [PSCustomObject]@{ headSha = "ffffffffffffffffffffffffffffffffffffffff"; status = "in_progress"; conclusion = "" }
+            expected = "mismatch"
+        }
+    )
+    foreach ($dispositionCase in $workflowDispositionCases) {
+        $actualDisposition = Get-DevelopmentRunDisposition -Run $dispositionCase.run -Commit $workflowCommit
+        if ($actualDisposition -ne $dispositionCase.expected) {
+            throw "Self-test failed: $($dispositionCase.name) was '$actualDisposition', expected '$($dispositionCase.expected)'."
+        }
+    }
     $installerSelfTestDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("windows-ai-installer-{0}" -f [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $installerSelfTestDirectory | Out-Null
     try {
@@ -533,6 +687,7 @@ if ($Mode -eq "Run") {
         architecture = $env:PROCESSOR_ARCHITECTURE
         nodeVersion = $nodeVersion
         pnpmVersion = $pnpmVersion
+        buildDispatchStartedAtUtc = $null
         actionsRunId = $null
         actionsUrl = $null
         artifactName = $null
@@ -586,28 +741,105 @@ if ($Mode -eq "Build") {
     Assert-ResultMatrix -Results @($automated.results) -ExpectedCases @($CaseSpec.automatedChecks) -AllowedStatuses @("pass", "fail") -Label "Automated"
     Assert-AutomatedChecksPassed -Results @($automated.results)
 
-    $dispatchStarted = (Get-Date).ToUniversalTime().AddMinutes(-1)
-    & gh workflow run $CaseSpec.developmentWorkflow --repo $CaseSpec.repository --ref $state.branch -f run_windows=true -f run_macos_aarch64=false -f run_windows_arm64=false -f run_linux_amd64=false
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to dispatch Development Test."
+    if (-not ($state.PSObject.Properties.Name -contains "buildDispatchStartedAtUtc")) {
+        $state | Add-Member -NotePropertyName buildDispatchStartedAtUtc -NotePropertyValue $null
     }
-    Start-Sleep -Seconds 6
-    $runsJson = & gh run list --repo $CaseSpec.repository --workflow $CaseSpec.developmentWorkflow --branch $state.branch --event workflow_dispatch --limit 10 --json databaseId,createdAt,headSha,status,url
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to read Development Test runs."
+
+    $candidate = $null
+    $candidateDisposition = $null
+    if ($state.actionsRunId) {
+        $recordedRun = Read-DevelopmentRun -Repository $CaseSpec.repository -ActionsRunId ([int64]$state.actionsRunId)
+        if ($recordedRun) {
+            $recordedDisposition = Get-DevelopmentRunDisposition -Run $recordedRun -Commit $state.commit
+            if ($recordedDisposition -in @("wait", "success")) {
+                $candidate = $recordedRun
+                $candidateDisposition = $recordedDisposition
+                Write-Host "Resuming recorded Development Test: $($recordedRun.url)" -ForegroundColor Cyan
+            }
+            else {
+                Write-Warning "Recorded Development Test is stale or completed without success; a replacement may be dispatched."
+            }
+        }
+        else {
+            Write-Warning "Recorded Development Test no longer exists; a replacement may be dispatched."
+        }
     }
-    $candidate = Select-DevelopmentRun -RunsJson $runsJson -Commit $state.commit -NotBeforeUtc $dispatchStarted
+
+    if (-not $candidate -and $state.buildDispatchStartedAtUtc) {
+        try {
+            $recoveryStarted = ConvertTo-UtcDateTime -Value $state.buildDispatchStartedAtUtc
+        }
+        catch {
+            throw "Stored Development Test dispatch timestamp is invalid. Start a new Run from a fresh clone."
+        }
+        $recoveryAttempts = 1
+        if (((Get-Date).ToUniversalTime() - $recoveryStarted).TotalMinutes -lt 10) {
+            # A dispatch can take a few seconds to appear in `gh run list`.
+            # During that propagation window, wait for the original run instead
+            # of treating one empty list response as permission to dispatch again.
+            $recoveryAttempts = 12
+        }
+        $recoveredRun = $null
+        for ($recoveryAttempt = 1; $recoveryAttempt -le $recoveryAttempts -and -not $recoveredRun; $recoveryAttempt += 1) {
+            if ($recoveryAttempt -gt 1) {
+                Start-Sleep -Seconds 5
+            }
+            $recoveredRun = Find-DevelopmentRun `
+                -Repository $CaseSpec.repository `
+                -Workflow $CaseSpec.developmentWorkflow `
+                -Branch $state.branch `
+                -Commit $state.commit `
+                -NotBeforeUtc $recoveryStarted
+        }
+        if ($recoveredRun) {
+            $recoveredDisposition = Get-DevelopmentRunDisposition -Run $recoveredRun -Commit $state.commit
+            if ($recoveredDisposition -in @("wait", "success")) {
+                $candidate = $recoveredRun
+                $candidateDisposition = $recoveredDisposition
+                Write-Host "Recovered Development Test dispatched by an interrupted Build: $($recoveredRun.url)" -ForegroundColor Cyan
+            }
+        }
+    }
+
     if (-not $candidate) {
-        throw "Workflow dispatched, but no run matched commit $($state.commit). Retry -Mode Build shortly."
+        $dispatchStarted = (Get-Date).ToUniversalTime().AddMinutes(-1)
+        $state.buildDispatchStartedAtUtc = $dispatchStarted.ToString("o")
+        $state.actionsRunId = $null
+        $state.actionsUrl = $null
+        $state.artifactName = $null
+        $state.artifactSize = $null
+        $state.artifactSha256 = $null
+        Save-State -State $state -Directory $effectiveRunDirectory
+        & gh workflow run $CaseSpec.developmentWorkflow --repo $CaseSpec.repository --ref $state.branch -f run_windows=true -f run_macos_aarch64=false -f run_windows_arm64=false -f run_linux_amd64=false
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to dispatch Development Test. The dispatch marker was preserved for safe retry."
+        }
+        for ($selectionAttempt = 1; $selectionAttempt -le 12 -and -not $candidate; $selectionAttempt += 1) {
+            Start-Sleep -Seconds 5
+            $candidate = Find-DevelopmentRun `
+                -Repository $CaseSpec.repository `
+                -Workflow $CaseSpec.developmentWorkflow `
+                -Branch $state.branch `
+                -Commit $state.commit `
+                -NotBeforeUtc $dispatchStarted
+        }
+        if (-not $candidate) {
+            throw "Workflow was dispatched, but its run ID is not visible yet. Retry Build; it will recover this dispatch instead of creating another."
+        }
+        $candidateDisposition = Get-DevelopmentRunDisposition -Run $candidate -Commit $state.commit
     }
 
     $state.actionsRunId = $candidate.databaseId
     $state.actionsUrl = $candidate.url
+    if ($candidateDisposition -ne "success") {
+        $state.artifactName = $null
+        $state.artifactSize = $null
+        $state.artifactSha256 = $null
+    }
     Save-State -State $state -Directory $effectiveRunDirectory
     Write-Host "Development Test: $($candidate.url)" -ForegroundColor Cyan
-    & gh run watch $candidate.databaseId --repo $CaseSpec.repository --exit-status
-    if ($LASTEXITCODE -ne 0) {
-        throw "Development Test failed. Keep the Actions URL and mark dependent manual cases blocked."
+    if ($candidateDisposition -ne "success") {
+        $candidate = Wait-DevelopmentRun -Repository $CaseSpec.repository -ActionsRunId ([int64]$candidate.databaseId) -Commit $state.commit
     }
     $artifactJson = & gh api "repos/$($CaseSpec.repository)/actions/runs/$($candidate.databaseId)/artifacts"
     if ($LASTEXITCODE -ne 0) {
