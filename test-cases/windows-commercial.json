@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-25.8",
+  "caseVersion": "2026-08-25.9",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
   "targetBranch": "codex/commercial-canary-20260824",
-  "requiredAncestor": "ef108413ae8b9ba056bcc4e335a92e657adb9f3f",
+  "requiredAncestor": "b8326627af657944c6a5e34f768a823db4529c64",
   "developmentWorkflow": "dev.yml",
   "automatedChecks": [
     {
@@ -90,6 +90,23 @@
     }
   ],
   "manualChecks": [
+    {
+      "id": "WIN-BUILD-RESUME-001",
+      "title": "Build 重入复用同一 Development Test",
+      "risk": "low",
+      "requires": [
+        "首次 Build 已成功并记录 Development Test URL",
+        "仍使用同一个 RUN_ID"
+      ],
+      "steps": [
+        "首次 Build 成功后记录脱敏的 Actions Run ID 或 URL",
+        "用同一个 RUN_ID 原样再次执行 Build",
+        "确认第二次 Build 直接复用已成功任务并下载同一构件",
+        "确认两次输出的 Development Test URL 完全相同且没有新任务取消原任务"
+      ],
+      "expected": "第二次 Build 不派发新任务；复用同一成功 Run、同一 URL 和同一构件哈希。",
+      "rollback": "无；若 URL 改变或产生取消，停止安装并发布 FAIL。"
+    },
     {
       "id": "WIN-INSTALL-001",
       "title": "临时安装包安装与首次启动",

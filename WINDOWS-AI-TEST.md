@@ -95,6 +95,11 @@ Build 是可恢复操作：每次派发前先把时间标记写入本机状态�
 Build 使用短轮询读取状态；GitHub API 暂时不可用时会保留原 Run ID 并停止，恢复后再次
 执行同一命令即可，不要手工触发第二条 Development Test。
 
+首次 Build 成功下载并校验 EXE 后，为验收恢复逻辑，立刻用同一个 `RUN_ID` 原样再执行
+一次 Build。第二次必须显示同一个 Development Test URL，并直接复用成功任务及构件；
+若出现新的 Actions Run、原任务被取消或 URL 改变，记录 `WIN-BUILD-RESUME-001 = fail`
+并停止安装。两次 Build 都成功且 URL 相同后，才记录该项并进入真机安装。
+
 ### C. 执行 Windows 真机用例
 
 严格按 `test-cases/windows-commercial.json` 中 `manualChecks` 的顺序测试。每项完成后
