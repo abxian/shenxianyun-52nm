@@ -85,11 +85,7 @@ impl CoreManager {
 
     pub fn get_sidecar_pid(&self) -> Option<u32> {
         let _guard = self.sidecar_state_lock.lock();
-        self.state
-            .load()
-            .child_sidecar
-            .load_full()
-            .map(|child| child.pid())
+        self.state.load().child_sidecar.load_full().map(|child| child.pid())
     }
 
     pub fn take_child_sidecar(&self) -> Option<CommandChild> {
@@ -119,15 +115,10 @@ impl CoreManager {
     pub fn clear_running_child_sidecar(&self, pid: u32) -> bool {
         let _guard = self.sidecar_state_lock.lock();
         let state = self.state.load();
-        let is_current = state
-            .child_sidecar
-            .load_full()
-            .is_some_and(|child| child.pid() == pid);
+        let is_current = state.child_sidecar.load_full().is_some_and(|child| child.pid() == pid);
         if is_current {
             state.child_sidecar.store(None);
-            state
-                .running_mode
-                .store(Arc::new(RunningMode::NotRunning));
+            state.running_mode.store(Arc::new(RunningMode::NotRunning));
         }
         is_current
     }

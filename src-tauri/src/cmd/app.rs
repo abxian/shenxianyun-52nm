@@ -69,14 +69,10 @@ fn remove_factory_reset_config(app_dir: &Path) -> std::io::Result<usize> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let staging_dir = app_dir.join(format!(
-        "{FACTORY_RESET_STAGING_PREFIX}{}-{suffix}",
-        std::process::id()
-    ));
+    let staging_dir = app_dir.join(format!("{FACTORY_RESET_STAGING_PREFIX}{}-{suffix}", std::process::id()));
     fs::create_dir(&staging_dir)?;
 
-    let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> =
-        Vec::with_capacity(targets.len());
+    let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::with_capacity(targets.len());
     for source in targets {
         let Some(file_name) = source.file_name() else {
             continue;
@@ -86,11 +82,7 @@ fn remove_factory_reset_config(app_dir: &Path) -> std::io::Result<usize> {
             let mut rollback_failures = Vec::new();
             for (original, staged_path) in staged.iter().rev() {
                 if let Err(rollback_error) = fs::rename(staged_path, original) {
-                    rollback_failures.push(format!(
-                        "{}: {}",
-                        original.display(),
-                        rollback_error
-                    ));
+                    rollback_failures.push(format!("{}: {}", original.display(), rollback_error));
                 }
             }
             let _ = fs::remove_dir(&staging_dir);
@@ -193,9 +185,7 @@ pub async fn factory_reset_app() -> CmdResult<()> {
             Type::System,
             "彻底重置已中止：重置前无法完整停止核心或恢复系统网络"
         );
-        return Err(
-            "重置前无法完整停止核心或恢复系统网络，原配置未删除；请重启电脑后重试".into(),
-        );
+        return Err("重置前无法完整停止核心或恢复系统网络，原配置未删除；请重启电脑后重试".into());
     }
 
     let reset_result: CmdResult<usize> = async {
@@ -263,10 +253,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "shenxianyun-factory-reset-{}-{suffix}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("shenxianyun-factory-reset-{}-{suffix}", std::process::id()));
         fs::create_dir_all(root.join("profiles"))?;
         fs::create_dir_all(root.join("logs"))?;
         fs::create_dir_all(root.join(dirs::BACKUP_DIR))?;

@@ -34,17 +34,14 @@ pub struct ManagedAuth {
     pub update_version: u64,
 }
 
-static PENDING_MANAGED_IMPORT: Lazy<Mutex<Option<ManagedImportRequest>>> =
-    Lazy::new(|| Mutex::new(None));
+static PENDING_MANAGED_IMPORT: Lazy<Mutex<Option<ManagedImportRequest>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn queue_managed_import(request: ManagedImportRequest) {
     *PENDING_MANAGED_IMPORT.lock() = Some(request);
 }
 
 fn managed_auth_path() -> CmdResult<std::path::PathBuf> {
-    Ok(dirs::app_home_dir()
-        .stringify_err()?
-        .join(MANAGED_AUTH_FILE))
+    Ok(dirs::app_home_dir().stringify_err()?.join(MANAGED_AUTH_FILE))
 }
 
 #[cfg(unix)]
@@ -67,8 +64,8 @@ pub fn load_managed_auth() -> CmdResult<Option<ManagedAuth>> {
     }
 
     let encrypted = fs::read_to_string(&path).stringify_err()?;
-    let json = decrypt_data(encrypted.trim())
-        .map_err(|_| SmartString::from("受管订阅凭据无法解密，请重新导入提取码"))?;
+    let json =
+        decrypt_data(encrypted.trim()).map_err(|_| SmartString::from("受管订阅凭据无法解密，请重新导入提取码"))?;
     let auth = serde_json::from_str::<ManagedAuth>(&json).stringify_err()?;
     Ok(Some(auth))
 }
@@ -88,8 +85,7 @@ pub fn save_managed_auth(auth: ManagedAuth) -> CmdResult<()> {
         fs::create_dir_all(parent).stringify_err()?;
     }
     let json = serde_json::to_string(&auth).stringify_err()?;
-    let encrypted =
-        encrypt_data(&json).map_err(|_| SmartString::from("受管订阅凭据加密失败"))?;
+    let encrypted = encrypt_data(&json).map_err(|_| SmartString::from("受管订阅凭据加密失败"))?;
     fs::write(&path, encrypted.as_bytes()).stringify_err()?;
     #[cfg(unix)]
     restrict_file_permissions(&path)?;

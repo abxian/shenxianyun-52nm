@@ -537,11 +537,7 @@ impl ServiceManager {
             // 协议不匹配时回退到 Sidecar，并由用户在界面中明确点击修复。
             if clash_verge_service_ipc::is_reinstall_service_needed().await {
                 self.set_status(ServiceStatus::NeedsReinstall);
-                logging!(
-                    warn,
-                    Type::Service,
-                    "服务协议不匹配，等待用户明确执行修复"
-                );
+                logging!(warn, Type::Service, "服务协议不匹配，等待用户明确执行修复");
                 bail!("service protocol mismatch; explicit repair required");
             }
 

@@ -196,11 +196,7 @@ pub async fn update_profile(
     logging!(info, Type::Config, "[订阅更新] 开始更新订阅 {}", uid);
     let url_opt = should_update_profile(uid, ignore_auto_update).await?;
     let previous_profile = if url_opt.is_some() {
-        let profile = Config::profiles()
-            .await
-            .latest_arc()
-            .get_item(uid)?
-            .clone();
+        let profile = Config::profiles().await.latest_arc().get_item(uid)?.clone();
         let content = profile.read_file().await?;
         Some((profile, content))
     } else {
@@ -208,21 +204,17 @@ pub async fn update_profile(
     };
 
     let should_refresh = match url_opt {
-        Some((url, opt)) => {
-            match perform_profile_update(uid, &url, opt.as_ref(), option, is_mannual_trigger).await {
-                Ok(is_current) => is_current && auto_refresh,
-                Err(error) => {
-                    if let Some((profile, content)) = previous_profile.as_ref()
-                        && let Err(restore_error) = restore_profile_update(uid, profile, content).await
-                    {
-                        return Err(anyhow!(
-                            "{error}; 更新前订阅恢复失败: {restore_error}"
-                        ));
-                    }
-                    return Err(error);
+        Some((url, opt)) => match perform_profile_update(uid, &url, opt.as_ref(), option, is_mannual_trigger).await {
+            Ok(is_current) => is_current && auto_refresh,
+            Err(error) => {
+                if let Some((profile, content)) = previous_profile.as_ref()
+                    && let Err(restore_error) = restore_profile_update(uid, profile, content).await
+                {
+                    return Err(anyhow!("{error}; 更新前订阅恢复失败: {restore_error}"));
                 }
+                return Err(error);
             }
-        }
+        },
         None => auto_refresh,
     };
 
@@ -254,9 +246,7 @@ pub async fn update_profile(
                 if let Some((profile, content)) = previous_profile.as_ref()
                     && let Err(restore_error) = restore_profile_update(uid, profile, content).await
                 {
-                    return Err(anyhow!(
-                        "{err}; 更新前订阅恢复失败: {restore_error}"
-                    ));
+                    return Err(anyhow!("{err}; 更新前订阅恢复失败: {restore_error}"));
                 }
                 return Err(err);
             }
@@ -270,10 +260,7 @@ async fn restore_profile_update(uid: &String, profile: &PrfItem, content: &Strin
     let mut restore_item = profile.clone();
     restore_item.file_data = Some(content.clone());
     profiles_draft_update_item_safe(uid, &mut restore_item).await?;
-    let is_current = Config::profiles()
-        .await
-        .latest_arc()
-        .is_current_profile_index(uid);
+    let is_current = Config::profiles().await.latest_arc().is_current_profile_index(uid);
     if is_current {
         let outcome = CoreManager::global().update_config_forced().await?;
         if !outcome.is_valid() {

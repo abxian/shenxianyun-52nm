@@ -50,9 +50,7 @@ pub(super) async fn resolve_scheme(param: &str) -> Result<()> {
 }
 
 fn extract_managed_import_request(link_parsed: &Url) -> Option<ManagedImportRequest> {
-    if link_parsed.scheme() != MANAGED_IMPORT_SCHEME
-        || link_parsed.host_str() != Some("install-config")
-    {
+    if link_parsed.scheme() != MANAGED_IMPORT_SCHEME || link_parsed.host_str() != Some("install-config") {
         return None;
     }
 
@@ -92,9 +90,7 @@ fn sanitize_api_base(value: &str) -> Option<std::string::String> {
 }
 
 fn extract_subscription_info(link_parsed: &Url) -> Option<(std::string::String, Option<String>)> {
-    if !matches!(link_parsed.scheme(), "clash" | "clash-verge")
-        && link_parsed.scheme() != MANAGED_IMPORT_SCHEME
-    {
+    if !matches!(link_parsed.scheme(), "clash" | "clash-verge") && link_parsed.scheme() != MANAGED_IMPORT_SCHEME {
         return None;
     }
 
@@ -218,8 +214,8 @@ mod tests {
         let link = Url::parse(&format!(
             "{MANAGED_IMPORT_SCHEME}://install-config?ticket=one-time-secret&api=https%3A%2F%2Fapi.example.test%3A5443&name=demo"
         ))?;
-        let request = extract_managed_import_request(&link)
-            .ok_or_else(|| anyhow::anyhow!("protected request was not parsed"))?;
+        let request =
+            extract_managed_import_request(&link).ok_or_else(|| anyhow::anyhow!("protected request was not parsed"))?;
         assert_eq!(request.ticket, "one-time-secret");
         assert_eq!(request.api_base, "https://api.example.test:5443");
         assert_eq!(request.name.as_deref(), Some("demo"));
@@ -246,8 +242,8 @@ mod tests {
             "{MANAGED_IMPORT_SCHEME}://install-config?url=https%3A%2F%2Fexample.test%2Fsub%2Fcode&name=legacy"
         ))?;
         assert!(extract_managed_import_request(&link).is_none());
-        let (url, name) = extract_subscription_info(&link)
-            .ok_or_else(|| anyhow::anyhow!("legacy request was not parsed"))?;
+        let (url, name) =
+            extract_subscription_info(&link).ok_or_else(|| anyhow::anyhow!("legacy request was not parsed"))?;
         assert_eq!(url, "https://example.test/sub/code");
         assert_eq!(name.as_deref(), Some("legacy"));
         Ok(())

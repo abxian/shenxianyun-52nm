@@ -97,8 +97,7 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
     let service_status = format!("{:?}", SERVICE_MANAGER.current().await);
     let service_ipc_path = Path::new(clash_verge_service_ipc::IPC_PATH);
     let service_ipc_exists = service_ipc_path.exists();
-    let service_protocol_mismatch =
-        service_ipc_exists && clash_verge_service_ipc::is_reinstall_service_needed().await;
+    let service_protocol_mismatch = service_ipc_exists && clash_verge_service_ipc::is_reinstall_service_needed().await;
 
     let auto_launch_enabled = autostart::get_launch_status().unwrap_or(false);
     #[cfg(target_os = "windows")]
@@ -108,10 +107,7 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
 
     let mut warnings = Vec::new();
     if !expected_core_path.exists() {
-        warnings.push(format!(
-            "当前安装目录缺少核心文件 {}",
-            expected_core_path.display()
-        ));
+        warnings.push(format!("当前安装目录缺少核心文件 {}", expected_core_path.display()));
     }
     if !service_path.exists() {
         warnings.push(format!("当前安装目录缺少服务组件 {}", service_path.display()));

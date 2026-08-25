@@ -303,10 +303,7 @@ fn task_launch_target(mode: TaskMode) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    Ok(extract_xml_tag(
-        &decode_console_output(&output.stdout),
-        "Command",
-    ))
+    Ok(extract_xml_tag(&decode_console_output(&output.stdout), "Command"))
 }
 
 /// 返回现有开机启动任务指向的可执行文件。诊断功能用它识别旧安装目录残留；

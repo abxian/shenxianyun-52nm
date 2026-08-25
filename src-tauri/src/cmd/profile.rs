@@ -6,8 +6,7 @@ use crate::{
     config::{
         Config, IProfiles, PrfItem, PrfOption,
         profiles::{
-            profiles_delete_item_safe, profiles_patch_item_safe, profiles_reorder_safe,
-            profiles_save_file_safe,
+            profiles_delete_item_safe, profiles_patch_item_safe, profiles_reorder_safe, profiles_save_file_safe,
         },
         profiles_append_item_safe,
     },
@@ -249,12 +248,7 @@ async fn handle_success(
                 rollback_detail
             );
         }
-        return Err(
-            format!(
-                "配置已验证但无法保存订阅索引: {save_error}; {index_rollback}; {rollback_detail}"
-            )
-            .into(),
-        );
+        return Err(format!("配置已验证但无法保存订阅索引: {save_error}; {index_rollback}; {rollback_detail}").into());
     }
     profiles.apply();
     handle::Handle::refresh_clash();
