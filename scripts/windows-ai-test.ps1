@@ -404,6 +404,18 @@ function Assert-ManualRecordOrder {
     }
 }
 
+function Get-AllowedBranches {
+    param([Parameter(Mandatory = $true)]$Cases)
+    $branches = @()
+    if ($Cases.PSObject.Properties.Name -contains "allowedBranches") {
+        $branches = @($Cases.allowedBranches | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    }
+    if ($branches.Count -eq 0 -and $Cases.targetBranch) {
+        $branches = @(([string]$Cases.targetBranch).Trim())
+    }
+    return $branches
+}
+
 function Assert-CandidateState {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -412,7 +424,8 @@ function Assert-CandidateState {
     )
     $branch = (& git branch --show-current).Trim()
     $commit = (& git rev-parse HEAD).Trim()
-    if ($branch -ne $State.branch -or $branch -ne $Cases.targetBranch) {
+    $allowedBranches = @(Get-AllowedBranches -Cases $Cases)
+    if ($branch -ne $State.branch -or $branch -notin $allowedBranches) {
         throw "Current branch no longer matches the recorded test candidate."
     }
     if ($commit -ne $State.commit) {
@@ -477,6 +490,14 @@ if ($Mode -eq "SelfTest") {
     $oneManualBlocked = @([PSCustomObject]@{ id = "WIN-ONE"; status = "blocked" })
     $expectedAutomated = @([PSCustomObject]@{ id = "AUTO-ONE" })
     $expectedManual = @([PSCustomObject]@{ id = "WIN-ONE" })
+    $branchCases = [PSCustomObject]@{
+        targetBranch = "candidate"
+        allowedBranches = @("candidate", "main")
+    }
+    $allowedBranches = @(Get-AllowedBranches -Cases $branchCases)
+    if ("candidate" -notin $allowedBranches -or "main" -notin $allowedBranches -or "other" -in $allowedBranches) {
+        throw "Self-test failed: allowed release branches were not enforced."
+    }
 
     Assert-ResultMatrix -Results $oneAutomatedPass -ExpectedCases $expectedAutomated -AllowedStatuses @("pass", "fail") -Label "Automated"
     Assert-ResultMatrix -Results $oneManualPass -ExpectedCases $expectedManual -AllowedStatuses @("pass", "fail", "blocked", "not_run") -Label "Manual"
@@ -634,8 +655,9 @@ if ($Mode -eq "Run") {
     }
 
     $branch = (& git branch --show-current).Trim()
-    if ($branch -ne $CaseSpec.targetBranch) {
-        throw "Current branch is '$branch'; expected '$($CaseSpec.targetBranch)'."
+    $allowedBranches = @(Get-AllowedBranches -Cases $CaseSpec)
+    if ($branch -notin $allowedBranches) {
+        throw "Current branch is '$branch'; expected one of: $($allowedBranches -join ', ')."
     }
     & git merge-base --is-ancestor $CaseSpec.requiredAncestor HEAD
     if ($LASTEXITCODE -ne 0) {
@@ -730,7 +752,8 @@ if ($Mode -eq "Build") {
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub CLI is not authenticated. Run gh auth login first."
     }
-    if ($state.branch -ne $CaseSpec.targetBranch) {
+    $allowedBranches = @(Get-AllowedBranches -Cases $CaseSpec)
+    if ($state.branch -notin $allowedBranches) {
         throw "The branch stored in test state does not match the test target."
     }
     Assert-CandidateState -State $state -Cases $CaseSpec -CasesPath $CasePath

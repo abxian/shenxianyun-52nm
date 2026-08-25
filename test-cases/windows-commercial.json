@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "caseVersion": "2026-08-25.9",
+  "caseVersion": "2026-08-25.10",
   "title": "吾爱云 52nm Windows 商业化候选版 AI 验收",
   "triggerPhrase": "开始测试",
   "repository": "abxian/shenxianyun-52nm",
   "targetBranch": "codex/commercial-canary-20260824",
-  "requiredAncestor": "b8326627af657944c6a5e34f768a823db4529c64",
+  "allowedBranches": ["codex/commercial-canary-20260824", "main"],
+  "requiredAncestor": "7e0973aa04d9c3c64a21e6804dccd21427fde5d2",
   "developmentWorkflow": "dev.yml",
   "automatedChecks": [
     {
