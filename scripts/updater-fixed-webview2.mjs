@@ -1,6 +1,6 @@
 import { context, getOctokit } from '@actions/github'
 
-import { resolveUpdateLog } from './updatelog.mjs'
+import { resolveUpdateLog, resolveUpdateLogDefault } from './updatelog.mjs'
 
 const UPDATE_TAG_NAME = 'updater'
 const UPDATE_JSON_FILE = 'update-fixed-webview2.json'
@@ -35,7 +35,9 @@ async function resolveUpdater() {
 
   const updateData = {
     name: tag.name,
-    notes: await resolveUpdateLog(tag.name), // use Changelog.md
+    notes: await resolveUpdateLog(tag.name).catch(() =>
+      resolveUpdateLogDefault().catch(() => 'No changelog available'),
+    ), // use Changelog.md
     pub_date: new Date().toISOString(),
     platforms: {
       'windows-x86_64': { signature: '', url: '' },
@@ -92,6 +94,13 @@ async function resolveUpdater() {
       delete updateData.platforms[key]
     }
   })
+
+  for (const key of ['windows-x86_64', 'windows-aarch64']) {
+    const platform = updateData.platforms[key]
+    if (!platform?.url || !platform.signature?.trim()) {
+      throw new Error(`fixed WebView2 updater is incomplete for ${key}`)
+    }
+  }
 
   // 生成一个代理github的更新文件
   // 使用 https://hub.fastgit.xyz/ 做github资源的加速
@@ -153,4 +162,7 @@ async function getSignature(url) {
   return response.text()
 }
 
-resolveUpdater().catch(console.error)
+resolveUpdater().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

@@ -603,7 +603,8 @@ jobs:
   release-update-for-fixed-webview2:
     if: ${{ !contains(github.ref_name, '-rc') }}
     runs-on: ubuntu-latest
-    needs: [update_tag]
+    # 固定版矩阵通常比普通版慢；必须等资产和签名全部上传后再生成 updater。
+    needs: [update_tag, release-for-fixed-webview2]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
