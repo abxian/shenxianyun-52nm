@@ -77,6 +77,9 @@ Var VC_REDIST_EXE
 Var VC_RUNTIME_READY
 Var VC_RUNTIME_NEEDED
 Var HadVergeService
+Var VergeProcAlive       ; KillVergeProcessAndWait 的结果：1 = 杀完仍在跑
+Var VergeResidualProc    ; 最后一个没能结束的进程名，用于如实提示用户
+Var VergeLeftoverFile    ; 卸载后仍然删不掉的文件，用于判断是否残留
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -365,8 +368,16 @@ Function PageLeaveReinstall
         Abort
       ${EndIf}
 
-      ; Other erros? show generic error message and return to select un/reinstall page
-      MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
+      ; Other errors? show generic error message and return to select un/reinstall page
+      ;
+      ; 这一分支最常见的真实原因是：旧版卸载器跑完了，但主程序或内核仍被占用，
+      ; 文件删不掉，于是上面的 ${FileExists} 判定为卸载失败。只提示一句
+      ; 「无法卸载」会让用户反复关进程重试而始终失败，所以补上真正的下一步。
+      ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+        MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)$\r$\n$\r$\n旧版本的文件仍被占用，无法删除。请重启电脑后再运行本安装程序；重启会清除占用，无需手动结束进程。"
+      ${Else}
+        MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
+      ${EndIf}
       Abort
     ${EndIf}
   reinst_done:
@@ -535,85 +546,93 @@ Function CheckVCRuntime64
 FunctionEnd
 
 
+; 结束一个进程，并且真的等到它消失。
+;
+; 旧实现有两个缺陷，正是「关掉进程还是提示失败」的来源：
+;   1. KillProcess 会往栈上压一个返回值，旧代码只 Pop 了 FindProcess 的，
+;      没 Pop Kill 的。每命中一个进程就漏一个值在栈上，后面别的宏
+;      （IsShortcutTarget / SimpleSC 等）的 Pop 就会取到这些残留值，
+;      行为随「当时到底有几个进程在跑」而变，表现极不稳定。
+;   2. KillProcess 之后立刻就去删文件。TerminateProcess 是异步的，
+;      内核回收句柄需要时间，此时 Delete 会失败；旧代码既不等也不重试，
+;      于是 RemoveStaleInstallFile / 卸载器留下旧文件，安装器随后
+;      因为 ${FileExists} 判定「卸载失败」并中止。
+;
+; 现在改为：杀掉后轮询确认，最多等约 5 秒；调用方可用 $VergeProcAlive
+; 判断是否真的干净（0 = 已结束，1 = 仍在）。
+!macro KillVergeProcessAndWait EXENAME
+  StrCpy $VergeProcAlive 0
+
+  !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${EXENAME}"
+  !else
+    nsis_tauri_utils::FindProcess "${EXENAME}"
+  !endif
+  Pop $R0
+
+  ${If} $R0 = 0
+    DetailPrint "Stopping ${EXENAME}..."
+    !if "${INSTALLMODE}" == "currentUser"
+      nsis_tauri_utils::KillProcessCurrentUser "${EXENAME}"
+    !else
+      nsis_tauri_utils::KillProcess "${EXENAME}"
+    !endif
+    Pop $R0   ; 必须 Pop，否则污染 NSIS 栈
+
+    ; 轮询到进程真的不见了为止，最多 20 x 250ms
+    StrCpy $R1 0
+    ${Do}
+      Sleep 250
+      !if "${INSTALLMODE}" == "currentUser"
+        nsis_tauri_utils::FindProcessCurrentUser "${EXENAME}"
+      !else
+        nsis_tauri_utils::FindProcess "${EXENAME}"
+      !endif
+      Pop $R0
+      ${If} $R0 <> 0
+        ${ExitDo}      ; 找不到了 = 已结束
+      ${EndIf}
+      IntOp $R1 $R1 + 1
+    ${LoopWhile} $R1 < 20
+
+    ${If} $R0 = 0
+      StrCpy $VergeProcAlive 1
+      DetailPrint "WARNING: ${EXENAME} is still running after being terminated."
+    ${Else}
+      DetailPrint "${EXENAME} stopped."
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+; 结束全部随客户端一起跑的进程：系统服务 + 各版本内核。
+; $VergeResidualProc 会记下最后一个没能结束的进程名，供调用方如实告知用户，
+; 而不是让用户对着一句笼统的「卸载失败」反复关进程。
 !macro CheckAllVergeProcesses
-  ; Check if clash-verge-service.exe is running
-  !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "clash-verge-service.exe"
-  !else
-    nsis_tauri_utils::FindProcess "clash-verge-service.exe"
-  !endif
-  Pop $R0
-  ${If} $R0 = 0
-    DetailPrint "Kill clash-verge-service.exe..."
-    !if "${INSTALLMODE}" == "currentUser"
-      nsis_tauri_utils::KillProcessCurrentUser "clash-verge-service.exe"
-    !else
-      nsis_tauri_utils::KillProcess "clash-verge-service.exe"
-    !endif
+  StrCpy $VergeResidualProc ""
+
+  !insertmacro KillVergeProcessAndWait "clash-verge-service.exe"
+  ${If} $VergeProcAlive = 1
+    StrCpy $VergeResidualProc "clash-verge-service.exe"
   ${EndIf}
 
-  ; Check if verge-mihomo-alpha.exe is running
-  !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "verge-mihomo-alpha.exe"
-  !else
-    nsis_tauri_utils::FindProcess "verge-mihomo-alpha.exe"
-  !endif
-  Pop $R0
-  ${If} $R0 = 0
-    DetailPrint "Kill verge-mihomo-alpha.exe..."
-    !if "${INSTALLMODE}" == "currentUser"
-      nsis_tauri_utils::KillProcessCurrentUser "verge-mihomo-alpha.exe"
-    !else
-      nsis_tauri_utils::KillProcess "verge-mihomo-alpha.exe"
-    !endif
+  !insertmacro KillVergeProcessAndWait "verge-mihomo-alpha.exe"
+  ${If} $VergeProcAlive = 1
+    StrCpy $VergeResidualProc "verge-mihomo-alpha.exe"
   ${EndIf}
 
-  ; Check if verge-mihomo.exe is running
-  !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "verge-mihomo.exe"
-  !else
-    nsis_tauri_utils::FindProcess "verge-mihomo.exe"
-  !endif
-  Pop $R0
-  ${If} $R0 = 0
-    DetailPrint "Kill verge-mihomo.exe..."
-    !if "${INSTALLMODE}" == "currentUser"
-      nsis_tauri_utils::KillProcessCurrentUser "verge-mihomo.exe"
-    !else
-      nsis_tauri_utils::KillProcess "verge-mihomo.exe"
-    !endif
+  !insertmacro KillVergeProcessAndWait "verge-mihomo.exe"
+  ${If} $VergeProcAlive = 1
+    StrCpy $VergeResidualProc "verge-mihomo.exe"
   ${EndIf}
 
-  ; Check if clash-meta-alpha.exe is running
-  !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "clash-meta-alpha.exe"
-  !else
-    nsis_tauri_utils::FindProcess "clash-meta-alpha.exe"
-  !endif
-  Pop $R0
-  ${If} $R0 = 0
-    DetailPrint "Kill clash-meta-alpha.exe..."
-    !if "${INSTALLMODE}" == "currentUser"
-      nsis_tauri_utils::KillProcessCurrentUser "clash-meta-alpha.exe"
-    !else
-      nsis_tauri_utils::KillProcess "clash-meta-alpha.exe"
-    !endif
+  !insertmacro KillVergeProcessAndWait "clash-meta-alpha.exe"
+  ${If} $VergeProcAlive = 1
+    StrCpy $VergeResidualProc "clash-meta-alpha.exe"
   ${EndIf}
 
-  ; Check if clash-meta.exe is running
-  !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "clash-meta.exe"
-  !else
-    nsis_tauri_utils::FindProcess "clash-meta.exe"
-  !endif
-  Pop $R0
-  ${If} $R0 = 0
-    DetailPrint "Kill clash-meta.exe..."
-    !if "${INSTALLMODE}" == "currentUser"
-      nsis_tauri_utils::KillProcessCurrentUser "clash-meta.exe"
-    !else
-      nsis_tauri_utils::KillProcess "clash-meta.exe"
-    !endif
+  !insertmacro KillVergeProcessAndWait "clash-meta.exe"
+  ${If} $VergeProcAlive = 1
+    StrCpy $VergeResidualProc "clash-meta.exe"
   ${EndIf}
 !macroend
 
@@ -1002,6 +1021,19 @@ Section Install
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   !insertmacro PrepareVergeServiceForUpgrade
   !insertmacro CheckAllVergeProcesses
+  ; 有进程没能结束就别硬着头皮往下走：后面 RemoveStaleInstallFile 一定会因为
+  ; 文件被占用而中止，用户只会看到一句没有指向的「无法替换文件」。
+  ; 这里直接点名是哪个进程，并给出可执行的下一步。
+  ;
+  ; 静默安装（应用内更新就是走静默）下绝不能弹窗——没有人能点确定，
+  ; 安装会永远卡住。静默时只写日志并中止，让更新流程拿到失败结果。
+  ${If} $VergeResidualProc != ""
+    DetailPrint "FATAL: $VergeResidualProc could not be stopped; aborting install."
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONSTOP "无法结束 $VergeResidualProc，安装无法继续。$\r$\n$\r$\n请在任务管理器中手动结束该进程后重试；若结束不掉，请重启电脑后再运行安装程序。"
+    ${EndIf}
+    Abort
+  ${EndIf}
   !insertmacro DisableStalePortableMode
 
   ; Ensure startup folders exist
@@ -1194,6 +1226,17 @@ Section Uninstall
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   !insertmacro RemoveVergeService
   !insertmacro CheckAllVergeProcesses
+  ; 进程没结束就删不掉文件，卸载会「看起来成功」却留下内核和主程序，
+  ; 紧接着的重装又会因为旧文件还在而判定「卸载失败」。这里先拦住。
+  ; 同样：静默/更新模式下不弹窗，只写日志后中止。
+  ${If} $VergeResidualProc != ""
+    DetailPrint "FATAL: $VergeResidualProc could not be stopped; aborting uninstall."
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONSTOP "无法结束 $VergeResidualProc，卸载无法继续。$\r$\n$\r$\n请在任务管理器中手动结束该进程后重试；若结束不掉，请重启电脑后再卸载。"
+    ${EndIf}
+    Abort
+  ${EndIf}
+  StrCpy $VergeLeftoverFile ""
 
   ; Remove cached window state files
   DetailPrint "Removing window-state.json / .window-state.json"
@@ -1230,16 +1273,32 @@ Section Uninstall
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
+  ;
+  ; 这三组 Delete 全部改为「删完立刻复核」。此前 Delete 失败是静默的：
+  ; 内核 verge-mihomo.exe 只要还占着文件就会原地留下，卸载照样报成功，
+  ; 用户以为卸干净了，重装时安装器又因为旧文件还在而判定卸载失败。
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    Delete /REBOOTOK "$INSTDIR\${MAINBINARYNAME}.exe"
+    StrCpy $VergeLeftoverFile "${MAINBINARYNAME}.exe"
+  ${EndIf}
 
   ; Delete resources
   {{#each resources}}
     Delete "$INSTDIR\\{{this.[1]}}"
+    ${If} ${FileExists} "$INSTDIR\\{{this.[1]}}"
+      Delete /REBOOTOK "$INSTDIR\\{{this.[1]}}"
+      StrCpy $VergeLeftoverFile "{{this.[1]}}"
+    ${EndIf}
   {{/each}}
 
-  ; Delete external binaries
+  ; Delete external binaries（内核就在这一组里，是残留的重灾区）
   {{#each binaries}}
     Delete "$INSTDIR\\{{this}}"
+    ${If} ${FileExists} "$INSTDIR\\{{this}}"
+      Delete /REBOOTOK "$INSTDIR\\{{this}}"
+      StrCpy $VergeLeftoverFile "{{this}}"
+    ${EndIf}
   {{/each}}
 
   ; Delete app associations
@@ -1397,6 +1456,19 @@ Section Uninstall
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
     !insertmacro NSIS_HOOK_POSTUNINSTALL
   !endif
+
+  ; 卸载残留复核。走到这里仍有删不掉的文件，说明有句柄还占着它们；
+  ; 上面已经用 /REBOOTOK 排进重启删除队列，但必须如实告诉用户，
+  ; 否则他会以为已经卸干净、直接重装，然后又撞上「卸载失败」。
+  ; 静默/更新模式下不弹窗，只写进安装日志。
+  ${If} $VergeLeftoverFile != ""
+    DetailPrint "WARNING: $VergeLeftoverFile could not be deleted; scheduled for removal on reboot."
+    ${If} $PassiveMode <> 1
+    ${AndIf} $UpdateMode <> 1
+    ${AndIfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONEXCLAMATION "卸载已完成，但有文件仍被占用，未能立即删除（$VergeLeftoverFile）。$\r$\n$\r$\n已安排在下次重启时清除。请先重启电脑，再安装新版本，否则安装程序会提示卸载失败。"
+    ${EndIf}
+  ${EndIf}
 
   ; Auto close if passive mode or updating
   ${If} $PassiveMode = 1
