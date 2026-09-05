@@ -61,6 +61,13 @@ jobs:
 
           echo "✅ Tag and package.json version are consistent."
 
+      # 上一步只比对 tag 与 package.json。这一步把四个应用版本号载体一起校验，
+      # 并额外校验系统服务（TUN 的前提）的 IPC 版本：打进安装包的服务二进制必须
+      # 与客户端链接的 clash_verge_service_ipc 版本一致，否则服务装得上却用不了，
+      # TUN 模式永久不可用。
+      - name: Check all version carriers are in sync
+        run: node scripts/check-version-sync.mjs
+
   update_tag:
     name: Update tag
     runs-on: ubuntu-latest

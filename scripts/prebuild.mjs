@@ -578,10 +578,11 @@ const resolveServicePermission = async () => {
 // =======================
 // Other resource resolvers (service, mmdb, geosite, geoip, enableLoopback)
 // =======================
-const SERVICE_LATEST_URL =
-  'https://github.com/clash-verge-rev/clash-verge-service-ipc/releases/latest'
 const SERVICE_URL_PREFIX =
   'https://github.com/clash-verge-rev/clash-verge-service-ipc/releases/download'
+const CARGO_TOML = path.join(cwd, 'src-tauri', 'Cargo.toml')
+const CARGO_LOCK = path.join(cwd, 'Cargo.lock')
+const SERVICE_STAMP_FILE = path.join(SERVICE_DIR, '.service-version')
 let SERVICE_VERSION
 
 const SERVICE_BINARIES = [
@@ -599,51 +600,73 @@ function serviceFileInfo(name) {
   }
 }
 
-function parseServiceVersionFromUrl(url) {
-  const match = url.match(/\/releases\/tag\/([^/?#]+)/)
-  return match ? decodeURIComponent(match[1]) : null
-}
-
-async function getLatestServiceVersion() {
-  if (!FORCE) {
-    const cached = await getCachedVersion('SERVICE_VERSION')
-    if (cached) {
-      SERVICE_VERSION = cached
-      return
+// 取出 src-tauri/Cargo.toml 里 clash_verge_service_ipc 的内联依赖表原文。
+function readServiceDependencySpec() {
+  const toml = fs.readFileSync(CARGO_TOML, 'utf8')
+  const start = toml.indexOf('clash_verge_service_ipc')
+  if (start < 0) {
+    throw new Error(`"clash_verge_service_ipc" not found in ${CARGO_TOML}`)
+  }
+  const open = toml.indexOf('{', start)
+  if (open < 0) {
+    throw new Error(
+      `"clash_verge_service_ipc" must be an inline table in ${CARGO_TOML}`,
+    )
+  }
+  let depth = 0
+  for (let i = open; i < toml.length; i++) {
+    if (toml[i] === '{') depth += 1
+    else if (toml[i] === '}') {
+      depth -= 1
+      if (depth === 0) return toml.slice(open, i + 1)
     }
   }
+  throw new Error(
+    `unterminated "clash_verge_service_ipc" table in ${CARGO_TOML}`,
+  )
+}
 
-  const options = {}
-  const httpProxy =
-    process.env.HTTP_PROXY ||
-    process.env.http_proxy ||
-    process.env.HTTPS_PROXY ||
-    process.env.https_proxy
-  if (httpProxy) options.agent = new HttpsProxyAgent(httpProxy)
+function readLockedServiceVersion() {
+  if (!fs.existsSync(CARGO_LOCK)) return null
+  const lock = fs.readFileSync(CARGO_LOCK, 'utf8')
+  const match = lock.match(
+    /name = "clash_verge_service_ipc"\s*\r?\nversion = "([^"]+)"/,
+  )
+  return match ? match[1] : null
+}
 
-  try {
-    const response = await fetch(SERVICE_LATEST_URL, {
-      ...options,
-      method: 'GET',
-      redirect: 'follow',
-    })
-    if (!response.ok)
-      throw new Error(
-        `Failed to fetch ${SERVICE_LATEST_URL}: ${response.status}`,
-      )
-
-    SERVICE_VERSION = parseServiceVersionFromUrl(response.url)
-    if (!SERVICE_VERSION)
-      throw new Error(
-        `Unable to resolve service release tag from ${response.url}`,
-      )
-
-    log_info(`Latest service version: ${SERVICE_VERSION}`)
-    await setCachedVersion('SERVICE_VERSION', SERVICE_VERSION)
-  } catch (err) {
-    log_error('Error fetching latest service version:', err.message)
-    process.exit(1)
+/**
+ * 打进安装包的服务二进制版本，必须与客户端实际链接的 clash_verge_service_ipc
+ * 版本号完全一致。
+ *
+ * 服务端 get_version 返回自己的版本字符串，客户端拿它和 crate 的 VERSION 做
+ * 相等比较（clash-verge-service-ipc 的 is_reinstall_service_needed）。两边只要
+ * 不是同一个版本号，该函数就恒为 true：服务其实装好了、IPC 也连得上，但客户端
+ * 一律判定为“协议不匹配”，于是 is_service_available 返回失败、TUN 模式永远不可用，
+ * 而且“修复服务”会重装出同一个不匹配的版本，永远修不好。
+ *
+ * 所以这里只认 Cargo 声明的版本，绝不能再取 releases/latest —— 上游服务一发新版，
+ * 我们的构建就会静默打包一个客户端根本不认的服务。
+ */
+function resolveRequiredServiceVersion() {
+  const spec = readServiceDependencySpec()
+  const declared = spec.match(/version\s*=\s*"([^"]+)"/)
+  if (!declared) {
+    throw new Error(
+      `"clash_verge_service_ipc" has no version field in ${CARGO_TOML}`,
+    )
   }
+  const version = declared[1]
+  const locked = readLockedServiceVersion()
+  if (locked && locked !== version) {
+    throw new Error(
+      `service version mismatch: src-tauri/Cargo.toml declares ${version}, ` +
+        `Cargo.lock resolves ${locked}. 打包的服务二进制必须与客户端链接的 IPC ` +
+        `版本一致，先把两处对齐再构建。`,
+    )
+  }
+  SERVICE_VERSION = `v${version}`
+  log_info(`Service version pinned by Cargo: ${SERVICE_VERSION}`)
 }
 
 async function findExtractedFile(dir, fileName) {
@@ -660,6 +683,8 @@ async function findExtractedFile(dir, fileName) {
 }
 
 async function resolveServiceBundle() {
+  resolveRequiredServiceVersion()
+
   const files = SERVICE_BINARIES.map((name) => {
     const info = serviceFileInfo(name)
     return {
@@ -668,12 +693,31 @@ async function resolveServiceBundle() {
     }
   })
 
-  if (!FORCE && files.every(({ targetPath }) => fs.existsSync(targetPath))) {
-    log_success('"clash-verge-service-ipc" already exists, skipping download')
-    return
+  // 缓存命中必须同时满足三件事：文件在、版本戳等于本次要求的版本、且这份版本戳
+  // 是同一个 target 写的。
+  //
+  // 版本戳必须带 host：Windows 与 macOS 的服务文件名不同（.exe vs 无扩展名），
+  // 共用一个 SERVICE_DIR。只比版本号的话，先构建 Windows 再构建 macOS 时，
+  // Windows 写下的版本戳会替 macOS 那三个旧文件背书，于是旧版本的二进制被原样
+  // 留下——正是这次要根除的“陈旧产物悄悄活下来”。
+  let stamp = null
+  try {
+    stamp = JSON.parse(await fsp.readFile(SERVICE_STAMP_FILE, 'utf8'))
+  } catch {
+    stamp = null
   }
 
-  await getLatestServiceVersion()
+  if (
+    !FORCE &&
+    stamp?.version === SERVICE_VERSION &&
+    stamp?.host === SIDECAR_HOST &&
+    files.every(({ targetPath }) => fs.existsSync(targetPath))
+  ) {
+    log_success(
+      `"clash-verge-service-ipc" ${SERVICE_VERSION} (${SIDECAR_HOST}) already exists, skipping download`,
+    )
+    return
+  }
 
   const archiveExt = platform === 'win32' ? 'zip' : 'tar.gz'
   const archiveFile = `clash-verge-service-ipc-${SERVICE_VERSION}-${SIDECAR_HOST}.${archiveExt}`
@@ -711,6 +755,10 @@ async function resolveServiceBundle() {
       log_success(`Extracted service file: ${targetFile}`)
     }
 
+    await fsp.writeFile(
+      SERVICE_STAMP_FILE,
+      `${JSON.stringify({ version: SERVICE_VERSION, host: SIDECAR_HOST }, null, 2)}\n`,
+    )
     log_success(`service bundle finished: ${archiveFile}`)
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true })

@@ -552,6 +552,30 @@ impl ServiceManager {
         self.run_operation(self.apply_service_status(status)).await
     }
 
+    /// 安装/重装收尾必须复核协议是否真的匹配。
+    ///
+    /// 装完能连上 IPC 只说明服务跑起来了，不代表当前客户端用得了它：
+    /// is_reinstall_service_needed() 比较的是服务上报的版本字符串和客户端链接的
+    /// crate 版本，不相等就永远为 true。此时 is_service_available 会失败、TUN 模式
+    /// 依旧不可用，而“修复服务”只会重装出同一个不匹配的版本。
+    ///
+    /// 所以这里必须如实报错，绝不能返回 Ok 让界面显示“安装成功”——那是把一个
+    /// 修不好的状态谎报成完成，用户只会反复弹管理员授权而毫无进展。
+    async fn ensure_service_protocol_matches(&self) -> Result<()> {
+        if clash_verge_service_ipc::is_reinstall_service_needed().await {
+            self.set_status(ServiceStatus::NeedsReinstall);
+            logging!(
+                error,
+                Type::Service,
+                "服务已安装并可连接，但协议版本与当前客户端不一致，判定为安装失败"
+            );
+            bail!(
+                "系统服务已安装，但上报的协议版本与当前客户端不一致，TUN 模式仍不可用。多半是旧版服务没被成功卸载（卸载时的管理员授权被取消），请重启电脑后再执行一次「修复系统服务」；若仍不匹配，说明安装包内的服务组件与客户端不是同一版本，需要更新客户端。"
+            );
+        }
+        Ok(())
+    }
+
     async fn apply_service_status(&self, status: ServiceStatus) -> Result<()> {
         self.set_status(status.clone());
         match status {
@@ -560,11 +584,13 @@ impl ServiceManager {
                 logging!(info, Type::Service, "服务需要重装，执行重装流程");
                 run_service_command(reinstall_service, "reinstall service")?;
                 wait_for_service_ipc(self).await?;
+                self.ensure_service_protocol_matches().await?;
             }
             ServiceStatus::ForceReinstallRequired => {
                 logging!(info, Type::Service, "服务需要强制重装，执行强制重装流程");
                 run_service_command(force_reinstall_service, "force reinstall service")?;
                 wait_for_service_ipc(self).await?;
+                self.ensure_service_protocol_matches().await?;
             }
             ServiceStatus::InstallRequired => {
                 logging!(info, Type::Service, "需要安装服务，执行安装流程");
@@ -576,6 +602,7 @@ impl ServiceManager {
                     run_service_command(reinstall_service, "reinstall service")?;
                     wait_for_service_ipc(self).await?;
                 }
+                self.ensure_service_protocol_matches().await?;
             }
             ServiceStatus::UninstallRequired => {
                 logging!(info, Type::Service, "服务需要卸载，执行卸载流程");

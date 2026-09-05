@@ -3467,7 +3467,9 @@ const HomePage = () => {
           ? 'ok'
           : 'warn',
       diagnostics?.serviceProtocolMismatch
-        ? '协议与当前客户端不匹配（不会自动弹管理员认证）'
+        ? `协议与当前客户端不匹配：已装 ${
+            diagnostics.serviceVersionInstalled ?? '版本未知'
+          }，客户端要求 ${diagnostics.serviceVersionExpected}。点「修复服务」重装即可`
         : isServiceOk
           ? '已安装且协议匹配'
           : '未安装或不可连接（TUN 需要它）',

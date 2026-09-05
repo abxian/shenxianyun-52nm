@@ -26,6 +26,8 @@ pub struct ServiceDiagnostics {
     service_ipc_path: String,
     service_ipc_exists: bool,
     service_protocol_mismatch: bool,
+    service_version_expected: String,
+    service_version_installed: Option<String>,
     auto_launch_enabled: bool,
     auto_launch_targets: Vec<String>,
     warnings: Vec<String>,
@@ -99,6 +101,18 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
     let service_ipc_exists = service_ipc_path.exists();
     let service_protocol_mismatch = service_ipc_exists && clash_verge_service_ipc::is_reinstall_service_needed().await;
 
+    // 协议是否匹配靠版本字符串相等判断，所以把两边的实际版本都摆出来。
+    // 少了这两个字段，"协议不匹配" 只是一句无法追查的结论。
+    let service_version_expected = clash_verge_service_ipc::VERSION.to_string();
+    let service_version_installed = if service_ipc_exists {
+        clash_verge_service_ipc::get_version()
+            .await
+            .ok()
+            .and_then(|resp| resp.data)
+    } else {
+        None
+    };
+
     let auto_launch_enabled = autostart::get_launch_status().unwrap_or(false);
     #[cfg(target_os = "windows")]
     let auto_launch_targets = crate::utils::schtasks::auto_launch_task_targets();
@@ -113,7 +127,11 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
         warnings.push(format!("当前安装目录缺少服务组件 {}", service_path.display()));
     }
     if service_protocol_mismatch {
-        warnings.push("系统服务协议与当前客户端不匹配，需要用户明确修复".into());
+        warnings.push(format!(
+            "系统服务协议与当前客户端不匹配：已安装服务 {}，客户端要求 {}。执行「修复系统服务」重装即可",
+            service_version_installed.as_deref().unwrap_or("版本未知"),
+            service_version_expected
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -137,6 +155,8 @@ pub async fn get_service_diagnostics() -> CmdResult<ServiceDiagnostics> {
         service_ipc_path: service_ipc_path.to_string_lossy().into_owned(),
         service_ipc_exists,
         service_protocol_mismatch,
+        service_version_expected,
+        service_version_installed,
         auto_launch_enabled,
         auto_launch_targets,
         warnings,

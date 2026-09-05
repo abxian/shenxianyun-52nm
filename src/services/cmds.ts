@@ -592,6 +592,8 @@ export interface ServiceDiagnostics {
   serviceIpcPath: string
   serviceIpcExists: boolean
   serviceProtocolMismatch: boolean
+  serviceVersionExpected: string
+  serviceVersionInstalled?: string
   autoLaunchEnabled: boolean
   autoLaunchTargets: string[]
   warnings: string[]
