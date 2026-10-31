@@ -1,7 +1,6 @@
-import { alpha, Box, Button, LinearProgress } from '@mui/material'
+import { alpha, Box, Button, LinearProgress, Typography } from '@mui/material'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { open as openUrl } from '@tauri-apps/plugin-shell'
-import type { DownloadEvent } from '@tauri-apps/plugin-updater'
 import { useLockFn } from 'ahooks'
 import type { Ref } from 'react'
 import { useImperativeHandle, useMemo, useRef, useState } from 'react'
@@ -12,8 +11,16 @@ import rehypeRaw from 'rehype-raw'
 import { BaseDialog, DialogRef } from '@/components/base'
 import { useUpdate } from '@/hooks/use-update'
 import { portableFlag } from '@/pages/_layout'
+import { getAppArch } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { useSetUpdateState, useUpdateState } from '@/services/states'
+import {
+  downloadAndInstallWithFallback,
+  cancelAppUpdateDownload,
+  macosDufsDownloadUrl,
+  releaseUrlForVersion,
+} from '@/services/update'
+import getSystem from '@/utils/get-system'
 
 type MarkdownNode = {
   type: string
@@ -115,6 +122,8 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
 
   const [downloaded, setDownloaded] = useState(0)
   const [total, setTotal] = useState(0)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [activeSource, setActiveSource] = useState<'dufs' | 'github'>('dufs')
   const downloadedRef = useRef(0)
   const totalRef = useRef(0)
 
@@ -152,39 +161,60 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
       showNotice.error('settings.modals.update.messages.breakChangeError')
       return
     }
+    // macOS 不走应用内更新，直接把 Dufs 上的 dmg 交给系统下载。
+    // 架构取不到或不认识时回退到 GitHub Release 页面，让用户自己挑，
+    // 而不是猜一个架构给出装不上的包。
+    if (getSystem() === 'macos') {
+      const arch = await getAppArch().catch(() => null)
+      const dufsUrl = macosDufsDownloadUrl(arch)
+      await openUrl(dufsUrl ?? releaseUrlForVersion(updateInfo.version))
+      return
+    }
     if (updateState) return
     setUpdateState(true)
+    setInstallingUpdate(false)
+    setActiveSource('dufs')
     setDownloaded(0)
     setTotal(0)
     downloadedRef.current = 0
     totalRef.current = 0
 
-    const onDownloadEvent = (event: DownloadEvent) => {
-      if (event.event === 'Started') {
-        const contentLength = event.data.contentLength ?? 0
-        totalRef.current = contentLength
-        setTotal(contentLength)
-        setDownloaded(0)
+    const onDownloadEvent = (event: {
+      source: 'dufs' | 'github'
+      phase: string
+      chunkLength?: number | null
+      contentLength?: number | null
+    }) => {
+      if (event.phase === 'stopping' || event.phase === 'installing')
+        setInstallingUpdate(true)
+      setActiveSource(event.source)
+      if (event.phase === 'fallback') {
+        totalRef.current = 0
         downloadedRef.current = 0
+        setTotal(0)
+        setDownloaded(0)
         return
       }
 
-      if (event.event === 'Progress') {
+      if (event.phase === 'progress') {
+        const contentLength = event.contentLength ?? totalRef.current
+        totalRef.current = contentLength
+        setTotal(contentLength)
         setDownloaded((prev) => {
-          const next = prev + event.data.chunkLength
+          const next = prev + (event.chunkLength ?? 0)
           downloadedRef.current = next
           return next
         })
       }
 
-      if (event.event === 'Finished' && totalRef.current === 0) {
+      if (event.phase === 'verified' && totalRef.current === 0) {
         totalRef.current = downloadedRef.current
         setTotal(downloadedRef.current)
       }
     }
 
     try {
-      await updateInfo.downloadAndInstall(onDownloadEvent)
+      await downloadAndInstallWithFallback(updateInfo, onDownloadEvent)
       await relaunch()
     } catch (err: any) {
       showNotice.error(err)
@@ -195,6 +225,19 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
       downloadedRef.current = 0
       totalRef.current = 0
     }
+  })
+
+  const closeUpdateDialog = useLockFn(async () => {
+    if (updateState) {
+      if (
+        installingUpdate ||
+        (await cancelAppUpdateDownload()) === 'installing'
+      ) {
+        showNotice.info('正在准备安装，暂不能取消，请等待安装器启动')
+        return
+      }
+    }
+    setOpen(false)
   })
 
   return (
@@ -228,9 +271,7 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
             size="small"
             sx={{ whiteSpace: 'nowrap' }}
             onClick={() => {
-              openUrl(
-                `https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v${updateInfo?.version}`,
-              )
+              openUrl(releaseUrlForVersion(updateInfo?.version))
             }}
           >
             {t('settings.modals.update.actions.goToRelease')}
@@ -247,8 +288,8 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
       }}
       okBtn={t('settings.modals.update.actions.update')}
       cancelBtn={t('shared.actions.cancel')}
-      onClose={() => setOpen(false)}
-      onCancel={() => setOpen(false)}
+      onClose={closeUpdateDialog}
+      onCancel={closeUpdateDialog}
       onOk={onUpdate}
     >
       <Box
@@ -425,11 +466,18 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ReactMarkdown>
       </Box>
       {updateState && (
-        <LinearProgress
-          variant={total > 0 ? 'determinate' : 'indeterminate'}
-          value={progress}
-          sx={{ mt: 1 }}
-        />
+        <Box sx={{ mt: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            {activeSource === 'dufs'
+              ? '正在从 Dufs 主源下载安装'
+              : 'Dufs 不可用，正在使用 GitHub 备用源'}
+          </Typography>
+          <LinearProgress
+            variant={total > 0 ? 'determinate' : 'indeterminate'}
+            value={progress}
+            sx={{ mt: 0.5 }}
+          />
+        </Box>
       )}
     </BaseDialog>
   )

@@ -20,12 +20,11 @@ pub enum NotificationEvent<'a> {
 
 fn notify(title: Cow<'_, str>, body: Cow<'_, str>) {
     let app_handle = handle::Handle::app_handle();
-    let app_name = &app_handle.package_info().name;
     app_handle
         .notification()
         .builder()
-        .title(brand::native_text(&title, app_name))
-        .body(brand::native_text(&body, app_name))
+        .title(brand::native_text(&title))
+        .body(brand::native_text(&body))
         .show()
         .ok();
 }

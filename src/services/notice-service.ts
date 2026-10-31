@@ -290,6 +290,8 @@ const baseShowNotice = (
   ...extras: NoticeExtra[]
 ): number => {
   const id = nextId++
+  // Technical failures stay in native diagnostics; never show red popup layers.
+  if (type === 'error') return id
   const { params, raw, duration } = parseNoticeExtras(extras)
   const effectiveDuration = resolveDuration(type, duration)
   const timerId =

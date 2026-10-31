@@ -13,6 +13,35 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify native update and core-stop recovery
+        run: python3 scripts/test-client-recovery-core.py
+
+      - name: Verify production rule enhancement
+        run: python3 scripts/test-rule-editor-core.py "$RUNNER_TEMP/rules-edited.yaml" "$RUNNER_TEMP/rules-deleted.yaml"
+
+      - name: Verify official DNS and direct-group defaults
+        run: python3 scripts/test-official-dns.py --fetch-dependencies
+
+      - name: Verify exact proxy accounting core and real loopback traffic
+        run: |
+          python3 scripts/test-core-targets.py
+          python3 scripts/build-proxy-core.py x86_64-unknown-linux-gnu
+          core="$PWD/src-tauri/sidecar/verge-mihomo-x86_64-unknown-linux-gnu"
+          python3 scripts/mihomo/live-accounting.py "$core"
+          python3 scripts/test-rule-editor-live.py "$core" "$RUNNER_TEMP/rules-edited.yaml" "$RUNNER_TEMP/rules-deleted.yaml"
+
+      - name: Check release compatibility and version carriers
+        run: |
+          node scripts/check-version-sync.mjs
+          python3 scripts/test-macos-release-assets.py
+
       - name: Check frontend changes
         id: check_frontend
         uses: dorny/paths-filter@v4
@@ -82,14 +111,66 @@ jobs:
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm test:subscription-refresh
 
+      - name: Run startup HTTP deadline and subscription content tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: pnpm test:startup-refresh
+
+      - name: Code switch disconnect transaction tests
+        run: pnpm test:code-switch
+
+      - name: Update cancellation and managed subscription recovery
+        run: node --experimental-strip-types --test scripts/test-client-recovery.mjs
+
+      - name: Rule editor persistence and failure tests
+        run: node --experimental-strip-types --test scripts/test-traffic-rule-editor.mjs
+
       - name: Run managed subscription presentation tests
         if: steps.check_frontend.outputs.frontend == 'true'
         run: pnpm test:managed-subscription
 
-      - name: Run managed traffic scheduler tests
+      - name: Run presence throttle tests
         if: steps.check_frontend.outputs.frontend == 'true'
-        run: pnpm test:managed-traffic
+        run: pnpm test:presence-throttle
 
-      - name: Run commercial brand boundary tests
+      - name: Run update button state tests
         if: steps.check_frontend.outputs.frontend == 'true'
-        run: pnpm brand:test
+        run: pnpm test:update-button-state
+
+      - name: Run commercial isolation tests
+        if: steps.check_frontend.outputs.frontend == 'true'
+        run: |
+          pnpm test:commercial-isolation
+          pnpm brand:test
+
+  accounting-native:
+    name: Proxy accounting on ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: .exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            extension: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Build and verify the actual native accounting core
+        shell: bash
+        run: |
+          python scripts/test-core-targets.py
+          python scripts/build-proxy-core.py '${{ matrix.target }}'
+          python scripts/mihomo/live-accounting.py 'src-tauri/sidecar/verge-mihomo-${{ matrix.target }}${{ matrix.extension }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: accounting-native-${{ matrix.target }}
+          path: src-tauri/sidecar/proxy-accounting-${{ matrix.target }}.json

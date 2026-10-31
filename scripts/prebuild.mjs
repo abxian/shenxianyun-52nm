@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { execFileSync, execSync } from 'child_process'
 import { createHash } from 'crypto'
 import fs from 'fs'
 import fsp from 'fs/promises'
@@ -10,8 +10,8 @@ import { glob } from 'glob'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { extract } from 'tar'
 
-import { log_debug, log_error, log_info, log_success } from './utils.mjs'
 import { applySiteProfile } from './site-profile.mjs'
+import { log_debug, log_error, log_info, log_success } from './utils.mjs'
 
 /**
  * Prebuild script with optimization features:
@@ -371,6 +371,18 @@ async function downloadFile(url, outPath) {
 // =======================
 async function resolveSidecar(binInfo) {
   const { name, targetFile, zipFile, exeFile, downloadURL } = binInfo
+  if (name === 'verge-mihomo' || name === 'verge-mihomo-alpha') {
+    if (name === 'verge-mihomo') {
+      execFileSync(
+        platform === 'win32' ? 'python' : 'python3',
+        ['scripts/build-proxy-core.py', SIDECAR_HOST],
+        {
+          stdio: 'inherit',
+        },
+      )
+    }
+    return
+  }
   const sidecarPath = path.join(SIDECAR_DIR, targetFile)
   await fsp.mkdir(SIDECAR_DIR, { recursive: true })
 
@@ -700,7 +712,7 @@ async function resolveServiceBundle() {
   // 共用一个 SERVICE_DIR。只比版本号的话，先构建 Windows 再构建 macOS 时，
   // Windows 写下的版本戳会替 macOS 那三个旧文件背书，于是旧版本的二进制被原样
   // 留下——正是这次要根除的“陈旧产物悄悄活下来”。
-  let stamp = null
+  let stamp
   try {
     stamp = JSON.parse(await fsp.readFile(SERVICE_STAMP_FILE, 'utf8'))
   } catch {

@@ -149,11 +149,14 @@ mod app_init {
             cmd::get_system_hostname,
             cmd::get_stable_device_key,
             cmd::restart_app,
+            cmd::install_app_update_with_fallback,
+            cmd::cancel_app_update_download,
             cmd::factory_reset_app,
             cmd::start_core,
             cmd::stop_core,
             cmd::restart_core,
             cmd::get_running_mode,
+            cmd::get_app_arch,
             cmd::get_auto_launch_status,
             cmd::entry_lightweight_mode,
             cmd::exit_lightweight_mode,
@@ -228,7 +231,13 @@ mod app_init {
 }
 
 pub fn run() {
-    if app_init::init_singleton_check().is_err() {
+    if let Err(error) = app_init::init_singleton_check() {
+        #[cfg(target_os = "macos")]
+        if error.is::<utils::macos_instance::ExistingClientConflict>() {
+            utils::macos_instance::show_conflict_notice();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = error;
         return;
     }
 

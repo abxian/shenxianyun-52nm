@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>神仙云圆形按钮隔离验证</title></head><body style="margin:0;background:linear-gradient(120deg,#e1e4fa,#94a8ef);color:#33406e;font-family:system-ui"><div id="root"></div><script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {ThemeProvider,createTheme,CssBaseline,Box,Typography} from '@mui/material';
+import {GlassPowerButton} from '/components/home/glass-power-button.tsx';
+const h=React.createElement;
+function Fixture(){
+ const [busy,setBusy]=React.useState(false);
+ const [result,setResult]=React.useState('测量中');
+ React.useEffect(()=>{const run=()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  const sizes=[...document.querySelectorAll('button')].map(b=>{
+   const a=b.getBoundingClientRect(),o=b.parentElement.getBoundingClientRect();
+   return {label:b.getAttribute('aria-label'),inner:[a.width,a.height],outer:[o.width,o.height],pass:Math.abs(a.width-a.height)<0.5&&Math.abs(o.width-o.height)<0.5};
+  });
+  document.documentElement.dataset.measurements=JSON.stringify(sizes);
+  setResult(JSON.stringify({viewport:[innerWidth,innerHeight],busy,pass:sizes.length===2&&sizes.every(s=>s.pass),sizes},null,2));
+ }));run();addEventListener('resize',run);return()=>removeEventListener('resize',run);},[busy]);
+ return h(Box,{sx:{p:3,minHeight:'100vh',boxSizing:'border-box'}},
+  h(Typography,{variant:'h5'},'实际组件 · 圆形尺寸验证（模拟状态，无VPN）'),
+  h(Box,{sx:{display:'grid',gridTemplateColumns:'minmax(180px, .9fr) minmax(220px, 1.1fr)',placeItems:'center',height:'55vh',minHeight:280}},
+   h(GlassPowerButton,{prominent:true,running:false,busy,onClick:()=>setBusy(true)}),
+   h(GlassPowerButton,{running:true,busy:false,onClick:()=>setBusy(false)})),
+  h('pre',{style:{whiteSpace:'pre-wrap',fontSize:14},role:'status'},result));
+}
+createRoot(document.getElementById('root')).render(h(ThemeProvider,{theme:createTheme()},h(CssBaseline),h(Fixture)));
+</script></body></html>

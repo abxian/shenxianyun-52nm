@@ -22,7 +22,7 @@ test('keeps native tray version text behind runtime brand replacement', () => {
     'utf8',
   )
 
-  assert.match(brandSource, /\.replace\("Verge", app_name\)/)
+  assert.match(brandSource, /\.replace\("Verge", VISIBLE_APP_NAME\)/)
   assert.match(traySource, /build_tray_version_label\(&texts\.verge_version/)
   assert.doesNotMatch(
     traySource,

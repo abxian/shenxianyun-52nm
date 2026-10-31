@@ -18,6 +18,8 @@ export const initConnData: ConnectionMonitorData = {
 }
 
 export interface ConnectionMonitorData {
+  proxyUploadTotal?: number
+  proxyDownloadTotal?: number
   uploadTotal: number
   downloadTotal: number
   activeConnections: IConnectionsItem[]
@@ -25,6 +27,8 @@ export interface ConnectionMonitorData {
 }
 
 export interface ConnectionSummaryData {
+  proxyUploadTotal?: number
+  proxyDownloadTotal?: number
   uploadTotal: number
   downloadTotal: number
   activeConnectionCount: number
@@ -171,6 +175,8 @@ const mergeConnectionSnapshot = (
 
   if (previousActiveById.size === 0) {
     return {
+      proxyUploadTotal: payload.proxyUploadTotal,
+      proxyDownloadTotal: payload.proxyDownloadTotal,
       uploadTotal: payload.uploadTotal ?? 0,
       downloadTotal: payload.downloadTotal ?? 0,
       activeConnections,
@@ -202,6 +208,8 @@ const mergeConnectionSnapshot = (
   }
 
   return {
+    proxyUploadTotal: payload.proxyUploadTotal,
+    proxyDownloadTotal: payload.proxyDownloadTotal,
     uploadTotal: payload.uploadTotal ?? 0,
     downloadTotal: payload.downloadTotal ?? 0,
     activeConnections,
@@ -212,6 +220,8 @@ const mergeConnectionSnapshot = (
 const mergeConnectionSummary = (
   payload: IConnections,
 ): ConnectionSummaryData => ({
+  proxyUploadTotal: payload.proxyUploadTotal,
+  proxyDownloadTotal: payload.proxyDownloadTotal,
   uploadTotal: payload.uploadTotal ?? 0,
   downloadTotal: payload.downloadTotal ?? 0,
   activeConnectionCount: payload.connections?.length ?? 0,

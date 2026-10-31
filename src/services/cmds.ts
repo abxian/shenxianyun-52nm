@@ -553,6 +553,11 @@ export const getRunningMode = async () => {
   return invoke<string>('get_running_mode')
 }
 
+// 获取本客户端自身的 CPU 架构（aarch64 / x86_64），用于给出对应的安装包
+export const getAppArch = async () => {
+  return invoke<string>('get_app_arch')
+}
+
 // 获取应用运行时间
 export const getAppUptime = async () => {
   return invoke<number>('get_app_uptime')

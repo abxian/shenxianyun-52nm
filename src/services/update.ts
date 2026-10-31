@@ -1,9 +1,12 @@
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import {
   check,
   type CheckOptions,
   type Update,
 } from '@tauri-apps/plugin-updater'
 
+import { DOMAIN_PROFILE } from '@/config/domain-profile'
 import { version as appVersion } from '@root/package.json'
 
 export type VersionParts = {
@@ -15,6 +18,24 @@ const SEMVER_FULL_REGEX =
   /^\d+(?:\.\d+){1,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const SEMVER_SEARCH_REGEX =
   /v?\d+(?:\.\d+){1,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/i
+
+export const SHENXIANYUN_RELEASES_URL = `https://github.com/${DOMAIN_PROFILE.githubRepository}/releases`
+export const UPDATE_FALLBACK_PROGRESS_EVENT =
+  'shenxianyun://update-fallback-progress'
+
+export type UpdateFallbackProgress = {
+  source: 'dufs' | 'github'
+  phase:
+    | 'checking'
+    | 'progress'
+    | 'downloaded'
+    | 'verified'
+    | 'fallback'
+    | 'installing'
+    | 'stopping'
+  chunkLength?: number | null
+  contentLength?: number | null
+}
 
 export const normalizeVersion = (
   input: string | null | undefined,
@@ -150,6 +171,41 @@ export const checkUpdateSafe = async (
   }
 
   return result
+}
+
+export const releaseUrlForVersion = (version?: string | null) => {
+  const normalized = ensureSemver(version)
+  return normalized
+    ? `${SHENXIANYUN_RELEASES_URL}/tag/v${normalized}`
+    : `${SHENXIANYUN_RELEASES_URL}/latest`
+}
+
+//52nm preserves its GitHub Release update route; no cross-site Dufs download.
+export const macosDufsDownloadUrl = (_arch?: string | null): null => null
+
+export const cancelAppUpdateDownload = () =>
+  invoke<'cancelled' | 'installing' | 'idle'>('cancel_app_update_download')
+
+export const downloadAndInstallWithFallback = async (
+  update: Update,
+  onProgress?: (progress: UpdateFallbackProgress) => void,
+) => {
+  const expectedVersion = resolveRemoteVersion(update)
+  if (!expectedVersion) {
+    throw new Error('更新元数据版本无效，已拒绝下载安装')
+  }
+
+  const unlisten = await listen<UpdateFallbackProgress>(
+    UPDATE_FALLBACK_PROGRESS_EVENT,
+    ({ payload }) => onProgress?.(payload),
+  )
+  try {
+    await invoke<void>('install_app_update_with_fallback', {
+      expectedVersion,
+    })
+  } finally {
+    unlisten()
+  }
 }
 
 export type { CheckOptions }

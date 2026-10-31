@@ -15,6 +15,7 @@ import {
   getSnapshotNotices,
   showNotice,
 } from '@/services/notice-service'
+import { summarizeNotice } from '@/services/notice-summary'
 import type { TranslationKey } from '@/types/generated/i18n-keys'
 
 type NoticePosition = NonNullable<IVergeConfig['notice_position']>
@@ -125,6 +126,40 @@ const resolveNoticeCopyText = (
   )
 }
 
+const NoticeMessage = ({
+  notice,
+  t,
+}: {
+  notice: NoticeItem
+  t: TranslationFn
+}) => {
+  const message = resolveNoticeMessage(notice, t)
+  if (typeof message !== 'string') return message
+  const summary = summarizeNotice(message)
+  return summary === message ? (
+    message
+  ) : (
+    <>
+      {summary}
+      <Box component="details" sx={{ mt: 1 }}>
+        <summary>查看详细信息</summary>
+        <Box
+          component="pre"
+          sx={{
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+            maxHeight: '30vh',
+            overflowY: 'auto',
+            fontSize: 12,
+          }}
+        >
+          {message}
+        </Box>
+      </Box>
+    </>
+  )
+}
+
 interface NoticeManagerProps {
   position?: NoticePosition | null
 }
@@ -174,7 +209,10 @@ export const NoticeManager: React.FC<NoticeManagerProps> = ({ position }) => {
         display: 'flex',
         flexDirection: 'column',
         gap: '10px',
-        maxWidth: '360px',
+        maxWidth: 'min(420px, calc(100vw - 32px))',
+        maxHeight: '70vh',
+        overflowY: 'auto',
+        overscrollBehavior: 'contain',
       }}
     >
       {currentNotices.map((notice) => (
@@ -195,7 +233,16 @@ export const NoticeManager: React.FC<NoticeManagerProps> = ({ position }) => {
           <Alert
             severity={notice.type}
             variant="filled"
-            sx={{ width: '100%' }}
+            sx={{
+              width: '100%',
+              minWidth: 0,
+              '& .MuiAlert-message': { minWidth: 0, overflowWrap: 'anywhere' },
+              '& .MuiAlert-action': {
+                alignSelf: 'flex-start',
+                position: 'sticky',
+                top: 0,
+              },
+            }}
             onContextMenu={(event) => {
               event.preventDefault()
               event.stopPropagation()
@@ -204,6 +251,8 @@ export const NoticeManager: React.FC<NoticeManagerProps> = ({ position }) => {
             action={
               <IconButton
                 size="small"
+                aria-label="关闭提示"
+                title="关闭提示"
                 color="inherit"
                 onClick={() => handleClose(notice.id)}
               >
@@ -211,7 +260,7 @@ export const NoticeManager: React.FC<NoticeManagerProps> = ({ position }) => {
               </IconButton>
             }
           >
-            {resolveNoticeMessage(notice, t)}
+            <NoticeMessage notice={notice} t={t} />
           </Alert>
         </Snackbar>
       ))}

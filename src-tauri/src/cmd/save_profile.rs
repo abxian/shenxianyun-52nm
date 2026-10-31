@@ -96,6 +96,10 @@ fn profile_affects_runtime(profiles: &IProfiles, index: &str) -> bool {
     let Some(current_uid) = profiles.get_current() else {
         return false;
     };
+    // Global items run even when the subscription selects its own merge/script.
+    if matches!(index, "Merge" | "Script") {
+        return true;
+    }
     if current_uid == index {
         return true;
     }

@@ -253,10 +253,7 @@ fn uninstall_service() -> Result<()> {
 
     // clash_verge_i18n::sync_locale(Config::verge().await.latest_arc().language.as_deref());
 
-    let prompt = brand::native_text(
-        &clash_verge_i18n::t!("service.adminUninstallPrompt"),
-        &crate::core::handle::Handle::app_handle().package_info().name,
-    );
+    let prompt = brand::native_text(&clash_verge_i18n::t!("service.adminUninstallPrompt"));
     let command =
         format!(r#"do shell script "sudo '{uninstall_shell}'" with administrator privileges with prompt "{prompt}""#);
 
@@ -290,10 +287,7 @@ fn install_service() -> Result<()> {
     // clash_verge_i18n::sync_locale(Config::verge().await.latest_arc().language.as_deref());
 
     let gid = tauri_plugin_clash_verge_sysinfo::current_gid();
-    let prompt = brand::native_text(
-        &clash_verge_i18n::t!("service.adminInstallPrompt"),
-        &crate::core::handle::Handle::app_handle().package_info().name,
-    );
+    let prompt = brand::native_text(&clash_verge_i18n::t!("service.adminInstallPrompt"));
     let command = format!(
         r#"do shell script "sudo CLASH_VERGE_SERVICE_GID={gid} '{install_shell}'" with administrator privileges with prompt "{prompt}""#
     );
@@ -423,8 +417,9 @@ pub(super) async fn get_clash_logs_by_service() -> Result<Vec<CompactString>> {
 pub(super) async fn stop_core_by_service() -> Result<()> {
     logging!(info, Type::Service, "通过服务停止核心 (IPC)");
 
-    let response = clash_verge_service_ipc::stop_clash()
+    let response = tokio::time::timeout(Duration::from_secs(8), clash_verge_service_ipc::stop_clash())
         .await
+        .context("停止核心服务超时，请稍后重试；原配置未更改")?
         .context("无法连接到客户端核心服务")?;
 
     if response.code > 0 {

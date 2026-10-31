@@ -44,6 +44,8 @@ export const useUpdate = (enabled: boolean = true) => {
     data: updateInfo,
     refetch: checkUpdate,
     isFetching: isValidating,
+    // 重试耗尽后的错误。必须向外暴露：否则更新检查失败在界面上完全不可见。
+    error,
   } = useQuery({
     queryKey: ['checkUpdate'],
     queryFn: async () => {
@@ -71,5 +73,6 @@ export const useUpdate = (enabled: boolean = true) => {
     checkUpdate,
     loading: isValidating,
     lastCheckUpdate: lastCheckUpdate ?? null,
+    error,
   }
 }

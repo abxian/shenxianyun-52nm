@@ -242,6 +242,8 @@ interface IConnectionsItem {
 }
 
 interface IConnections {
+  proxyUploadTotal?: number
+  proxyDownloadTotal?: number
   downloadTotal: number
   uploadTotal: number
   connections: IConnectionsItem[]

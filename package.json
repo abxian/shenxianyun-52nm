@@ -1,6 +1,6 @@
 {
   "name": "clash-verge",
-  "version": "2.5.38",
+  "version": "2.5.39",
   "license": "GPL-3.0-only",
   "scripts": {
     "prepare": "husky || true",
@@ -31,15 +31,21 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test:import-health": "node --test scripts/test-import-node-health.mjs",
-    "test:subscription-refresh": "node --test scripts/test-subscription-refresh.mjs",
+    "test:subscription-refresh": "node --test scripts/test-subscription-refresh.mjs scripts/test-access-recovery.mjs scripts/test-local-workspace.mjs",
     "test:managed-subscription": "node --experimental-strip-types --test scripts/test-managed-subscription.mjs",
-    "test:managed-traffic": "node --experimental-strip-types --test scripts/test-http-request-init.mjs scripts/test-managed-traffic-counter.mjs scripts/test-managed-traffic-diagnostics.mjs scripts/test-managed-traffic-scheduler.mjs",
+    "test:managed-traffic": "node --experimental-strip-types --test scripts/test-http-request-init.mjs scripts/test-managed-traffic-counter.mjs scripts/test-proxy-accounting.mjs scripts/test-managed-traffic-diagnostics.mjs scripts/test-managed-traffic-scheduler.mjs",
     "test:updater-platforms": "node --test scripts/test-updater-platforms.mjs",
     "i18n:check": "node scripts/cleanup-unused-i18n.mjs",
     "i18n:format": "node scripts/cleanup-unused-i18n.mjs --align --apply",
     "i18n:types": "node scripts/generate-i18n-keys.mjs",
     "typecheck": "tsc --noEmit",
-    "check:version-sync": "node scripts/check-version-sync.mjs"
+    "check:version-sync": "node scripts/check-version-sync.mjs",
+    "test:code-switch": "node --test scripts/test-code-switch.mjs",
+    "test:startup-refresh": "node --experimental-strip-types --test scripts/test-http-request-deadline.mjs scripts/test-subscription-content.mjs scripts/test-home-node-order.mjs",
+    "test:presence-throttle": "node --experimental-strip-types --test scripts/test-presence-throttle.mjs",
+    "test:update-button-state": "node --experimental-strip-types --test scripts/test-update-button-state.mjs",
+    "test:commercial-isolation": "node --test scripts/test-shenxianyun-commercial-isolation.mjs",
+    "test:updater-fallback": "node --test scripts/test-updater-fallback.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -134,7 +140,7 @@
       "biome format --write"
     ],
     "*.{css,scss,json,yaml,yml}": [
-      "biome format --write"
+      "biome format --write --no-errors-on-unmatched"
     ]
   },
   "type": "module",

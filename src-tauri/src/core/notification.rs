@@ -1,9 +1,10 @@
-use crate::utils::window_manager::WindowManager;
+use crate::{core::handle::Handle, utils::window_manager::WindowManager};
 use clash_verge_logging::{Type, logging};
+use serde::Serialize;
 use serde_json::json;
 use smartstring::alias::String;
 
-use tauri::{Emitter as _, WebviewWindow};
+use tauri::{AppHandle, Emitter as _};
 
 #[derive(Debug)]
 pub enum FrontendEvent<'a> {
@@ -20,16 +21,6 @@ pub enum FrontendEvent<'a> {
 pub struct NotificationSystem {}
 
 impl NotificationSystem {
-    fn emit_to_window(window: &WebviewWindow, event: FrontendEvent) {
-        let (event_name, Ok(payload)) = Self::serialize_event(event) else {
-            return;
-        };
-
-        if let Err(e) = window.emit(event_name, payload) {
-            logging!(warn, Type::Frontend, "Event emit failed: {}", e);
-        }
-    }
-
     fn serialize_event(event: FrontendEvent) -> (&'static str, Result<serde_json::Value, serde_json::Error>) {
         match event {
             FrontendEvent::RefreshClash => ("verge://refresh-clash-config", Ok(json!("yes"))),
@@ -45,8 +36,45 @@ impl NotificationSystem {
     }
 
     pub(crate) fn send_event(event: FrontendEvent) {
-        if let Some(window) = WindowManager::get_main_window() {
-            Self::emit_to_window(&window, event);
+        let (event_name, Ok(payload)) = Self::serialize_event(event) else {
+            return;
+        };
+        Self::dispatch(Handle::app_handle(), event_name, payload, true);
+    }
+
+    pub(crate) fn broadcast(app_handle: &AppHandle, event_name: &'static str, payload: impl Serialize) {
+        let Ok(payload) = serde_json::to_value(payload) else {
+            logging!(
+                warn,
+                Type::Frontend,
+                "Event payload serialization failed: {}",
+                event_name
+            );
+            return;
+        };
+        Self::dispatch(app_handle, event_name, payload, false);
+    }
+
+    fn dispatch(app_handle: &AppHandle, event_name: &'static str, payload: serde_json::Value, main_window_only: bool) {
+        // Tauri 2.11 holds the webview/listener locks during emit. With tracing,
+        // eval_script waits for the UI thread, which may be handling IPC and
+        // waiting for that same lock. Queue the whole lookup + emit on the UI
+        // thread; serializing first also owns any borrowed profile IDs/messages.
+        let app = app_handle.clone();
+        if let Err(e) = app_handle.run_on_main_thread(move || {
+            let result = if main_window_only {
+                let Some(window) = WindowManager::get_main_window() else {
+                    return;
+                };
+                window.emit(event_name, payload)
+            } else {
+                app.emit(event_name, payload)
+            };
+            if let Err(e) = result {
+                logging!(warn, Type::Frontend, "Event emit failed: {}: {}", event_name, e);
+            }
+        }) {
+            logging!(warn, Type::Frontend, "Event dispatch failed: {}: {}", event_name, e);
         }
     }
 }

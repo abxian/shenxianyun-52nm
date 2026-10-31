@@ -97,10 +97,13 @@ impl CoreManager {
         Ok(())
     }
 
-    pub(super) fn stop_core_by_sidecar(&self) -> Result<()> {
+    pub(super) async fn stop_core_by_sidecar(&self) -> Result<()> {
         logging!(info, Type::Core, "Stopping sidecar");
         if let Some(child) = self.take_child_sidecar() {
             let pid = child.pid();
+            self.stopping_sidecar_pid
+                .store(pid, std::sync::atomic::Ordering::Release);
+            let exits = self.sidecar_exit.subscribe();
             let result = child.kill();
             logging!(
                 trace,
@@ -109,8 +112,27 @@ impl CoreManager {
                 pid,
                 result
             );
-            result?;
+            if result.is_err() && *exits.borrow() != Some(pid) {
+                result?;
+            }
+            super::sidecar_exit::wait_for_exit(exits, pid, std::time::Duration::from_secs(8))
+                .await
+                .map_err(anyhow::Error::msg)?;
+        } else {
+            // A previous kill/exit wait may have failed. Do not forget that owned
+            // process and start a second one while its exit is still unconfirmed.
+            let pid = self.stopping_sidecar_pid.load(std::sync::atomic::Ordering::Acquire);
+            if pid != 0 {
+                super::sidecar_exit::wait_for_exit(
+                    self.sidecar_exit.subscribe(),
+                    pid,
+                    std::time::Duration::from_secs(8),
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+            }
         }
+        self.stopping_sidecar_pid.store(0, std::sync::atomic::Ordering::Release);
         self.set_running_mode(RunningMode::NotRunning);
         Ok(())
     }

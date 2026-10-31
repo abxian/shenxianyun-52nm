@@ -26,14 +26,6 @@ macro_rules! define_menu {
 
 define_menu! {
     dashboard => DASHBOARD, "tray_dashboard", "tray.dashboard",
-    rule_mode => RULE_MODE, "tray_rule_mode", "tray.ruleMode",
-    global_mode => GLOBAL_MODE, "tray_global_mode", "tray.globalMode",
-    direct_mode => DIRECT_MODE, "tray_direct_mode", "tray.directMode",
-    outbound_modes => OUTBOUND_MODES, "tray_outbound_modes", "tray.outboundModes",
-    profiles => PROFILES, "tray_profiles", "tray.profiles",
-    proxies => PROXIES, "tray_proxies", "tray.proxies",
-    system_proxy => SYSTEM_PROXY, "tray_system_proxy", "tray.systemProxy",
-    tun_mode => TUN_MODE, "tray_tun_mode", "tray.tunMode",
     close_all_connections => CLOSE_ALL_CONNECTIONS, "tray_close_all_connections", "tray.closeAllConnections",
     lightweight_mode => LIGHTWEIGHT_MODE, "tray_lightweight_mode", "tray.lightweightMode",
     copy_env => COPY_ENV, "tray_copy_env", "tray.copyEnv",

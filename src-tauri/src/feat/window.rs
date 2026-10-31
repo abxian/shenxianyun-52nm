@@ -39,6 +39,21 @@ pub async fn quit() {
 }
 
 pub async fn clean_async() -> bool {
+    let stop_timeout = if cfg!(target_os = "windows") {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(3)
+    };
+    clean_with_core_timeout(stop_timeout).await
+}
+
+pub async fn clean_for_update() -> bool {
+    // Interactive updates must allow the owned core's acknowledged exit before
+    // the installer touches its files. Normal quit keeps its short deadline.
+    clean_with_core_timeout(Duration::from_secs(12)).await
+}
+
+async fn clean_with_core_timeout(stop_timeout: Duration) -> bool {
     logging!(info, Type::System, "开始执行异步清理操作...");
 
     // 重置系统代理
@@ -67,7 +82,7 @@ pub async fn clean_async() -> bool {
     });
 
     // 关闭 Tun 模式 + 停止核心服务
-    let core_task = tokio::task::spawn(async {
+    let core_task = tokio::task::spawn(async move {
         logging!(info, Type::System, "disable tun");
         let tun_enabled = Config::verge().await.data_arc().enable_tun_mode.unwrap_or(false);
         if tun_enabled {
@@ -95,11 +110,6 @@ pub async fn clean_async() -> bool {
                 }
             }
         }
-
-        #[cfg(target_os = "windows")]
-        let stop_timeout = Duration::from_secs(2);
-        #[cfg(not(target_os = "windows"))]
-        let stop_timeout = Duration::from_secs(3);
 
         logging!(info, Type::System, "stop core");
         match timeout(stop_timeout, CoreManager::global().stop_core()).await {

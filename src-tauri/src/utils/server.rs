@@ -21,6 +21,13 @@ struct QueryParam {
     param: String,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InstanceIdentity {
+    bundle_id: std::string::String,
+    version: std::string::String,
+}
+
 // 关闭 embedded server 的信号发送端
 static SHUTDOWN_SENDER: OnceCell<Mutex<Option<oneshot::Sender<()>>>> = OnceCell::new();
 
@@ -29,6 +36,23 @@ pub async fn check_singleton() -> Result<()> {
     let port = IVerge::get_singleton_port();
     if is_port_in_use(port) {
         let client = ClientBuilder::new().timeout(Duration::from_millis(500)).build()?;
+        #[cfg(target_os = "macos")]
+        {
+            let identity = match client
+                .get(format!("http://127.0.0.1:{port}/commands/identity"))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => response.json::<InstanceIdentity>().await.ok(),
+                _ => None,
+            };
+            let identity = identity
+                .as_ref()
+                .map(|value| (value.bundle_id.as_str(), value.version.as_str()));
+            if !super::macos_instance::can_raise_existing(identity, env!("CARGO_PKG_VERSION")) {
+                bail!(super::macos_instance::ExistingClientConflict);
+            }
+        }
         // 需要确保 Send
         #[allow(clippy::needless_collect)]
         let argvs: Vec<std::string::String> = std::env::args().collect();
@@ -115,6 +139,16 @@ pub fn embed_server() {
         });
 
     let commands = visible.or(scheme).or(pac);
+    #[cfg(target_os = "macos")]
+    let commands = {
+        let identity = warp::path!("commands" / "identity").map(|| {
+            warp::reply::json(&InstanceIdentity {
+                bundle_id: super::macos_instance::BUNDLE_ID.to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            })
+        });
+        commands.or(identity)
+    };
 
     AsyncHandler::spawn(move || async move {
         warp::serve(commands)

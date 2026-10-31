@@ -12,8 +12,11 @@ use anyhow::{Result, anyhow};
 use clash_verge_logging::{Type, logging};
 use scopeguard::defer;
 use smartstring::alias::String;
-use std::{collections::HashSet, path::PathBuf, time::Instant};
-use tauri_plugin_mihomo::Error as MihomoError;
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 impl CoreManager {
     pub async fn use_default_config(&self, error_key: &str, error_msg: &str) -> Result<()> {
@@ -165,7 +168,14 @@ impl CoreManager {
         }
     }
 
-    async fn reload_config(&self, path: &str) -> Result<(), MihomoError> {
-        handle::Handle::mihomo().await.reload_config(true, path).await
+    async fn reload_config(&self, path: &str) -> Result<()> {
+        // A stalled IPC must enter the existing restart/rollback path, not keep
+        // the profile transaction and startup UI waiting indefinitely.
+        tokio::time::timeout(Duration::from_secs(15), async {
+            handle::Handle::mihomo().await.reload_config(true, path).await
+        })
+        .await
+        .map_err(|_| anyhow!("Core configuration reload timed out"))?
+        .map_err(Into::into)
     }
 }

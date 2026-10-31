@@ -12,7 +12,6 @@ import {
   LanguageRounded,
   NetworkCheckRounded,
   OpenInBrowserRounded,
-  PowerSettingsNewRounded,
   RefreshRounded,
   RestartAltRounded,
   RouterRounded,
@@ -56,11 +55,14 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { useLockFn } from 'ahooks'
 import yaml from 'js-yaml'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getVersion } from 'tauri-plugin-mihomo-api'
+import { getBaseConfig, getVersion } from 'tauri-plugin-mihomo-api'
 
 import { BasePage, type DialogRef } from '@/components/base'
+import { GlassPowerButton } from '@/components/home/glass-power-button'
+import { NodeSelectionPanel } from '@/components/home/node-selection-panel'
 import { WebsiteTestViewer } from '@/components/home/website-test-viewer'
 import { EditorViewer } from '@/components/profile/editor-viewer'
+import { FileInput } from '@/components/profile/file-input'
 import { ClashPortViewer } from '@/components/setting/mods/clash-port-viewer'
 import { ControllerViewer } from '@/components/setting/mods/controller-viewer'
 import { TunnelsViewer } from '@/components/setting/mods/tunnels-viewer'
@@ -84,6 +86,7 @@ import {
   createProfile,
   enhanceProfiles,
   factoryResetApp,
+  getRunningMode,
   getProfiles,
   getServiceDiagnostics,
   getStableDeviceKey,
@@ -94,6 +97,7 @@ import {
   patchClashMode,
   patchProfile,
   patchProfilesConfig,
+  patchVergeConfig,
   readProfileFile,
   repairService,
   restartCore,
@@ -106,6 +110,10 @@ import {
 } from '@/services/cmds'
 import delayManager from '@/services/delay'
 import {
+  desktopProxyTrafficTotals,
+  DESKTOP_MANAGED_TRAFFIC_STORAGE_KEY,
+} from '@/services/desktop-proxy-traffic'
+import {
   fetchWithVerifiedTls,
   getApiBase,
   getBootstrapProxy,
@@ -117,6 +125,12 @@ import {
   probeApiBase,
   rotateApiBase,
 } from '@/services/endpoint-resolver'
+import {
+  assertRequestActive,
+  fetchBufferedWithDeadline,
+  withRequestDeadline,
+} from '@/services/http-request-deadline'
+import { loadManagedContent } from '@/services/managed-download-recovery'
 import {
   clearManagedAuth,
   extractTicketFromLaunchUrl,
@@ -146,19 +160,56 @@ import {
   type ManagedTrafficReportOutcome,
   type ManagedTrafficSchedulerTransition,
 } from '@/services/managed-traffic-scheduler'
-import getSystem from '@/utils/get-system'
 import {
-  planSubscriptionRefresh,
-  type SubscriptionRefreshReason,
-} from '@/utils/subscription-refresh'
+  createPresenceThrottleState,
+  markPresenceAccepted,
+  markPresenceRateLimited,
+  markPresenceSent,
+  PRESENCE_STATE_DEBOUNCE_MS,
+  shouldSendPresence,
+} from '@/services/presence-throttle'
+import {
+  createSubscriptionMonitor,
+  type SubscriptionMonitor,
+} from '@/services/subscription-monitor'
+import {
+  DOMESTIC_API_DIRECT_RULE,
+  pinApiDirect,
+  upsertTrafficRule,
+  removeTrafficRule,
+  saveRuleEdit,
+} from '@/services/traffic-rule-editor'
+import {
+  downloadAndInstallWithFallback,
+  cancelAppUpdateDownload,
+} from '@/services/update'
+import {
+  needsSubscriptionRefresh,
+  parseAccessRestriction,
+  restrictionReason,
+  type AccessRestriction,
+  type AccessRestrictionReason,
+} from '@/utils/access-recovery'
+import getSystem from '@/utils/get-system'
+import { isAutomaticNode, sortHomeNodes } from '@/utils/home-node-order'
+import { homeStatusMessage } from '@/utils/home-status'
+import {
+  accountExpiryLabel,
+  homeWorkspaceVisible,
+  isLocalSettingsCommand,
+} from '@/utils/local-workspace'
+import { prepareSubscriptionContent } from '@/utils/subscription-content'
+import { version as desktopBuildVersion } from '@root/package.json'
 
 const CODE_STORAGE_KEY = 'shenxianyun.accessCode'
 const CODE_EXPIRES_STORAGE_KEY = 'shenxianyun.accessExpiresAt'
 const CODE_UPDATE_VERSION_STORAGE_KEY = 'shenxianyun.updateVersion'
+const CODE_REVISION_STORAGE_KEY = 'shenxianyun.subscriptionRevision.v1'
+const ACCESS_RESTRICTION_STORAGE_KEY = 'shenxianyun.accessRestriction.v1'
 const STARTUP_REFRESH_SESSION_KEY = 'shenxianyun.startupSubscriptionRefresh.v1'
 const CLIENT_ID_STORAGE_KEY = 'shenxianyun.clientId'
 const PENDING_PRESENCE_STORAGE_KEY = 'shenxianyun.pendingPresence.v1'
-const MANAGED_TRAFFIC_STORAGE_KEY = 'shenxianyun.managedTraffic.v1'
+const MANAGED_TRAFFIC_STORAGE_KEY = DESKTOP_MANAGED_TRAFFIC_STORAGE_KEY
 const MANAGED_TRAFFIC_DIAGNOSTIC_STORAGE_KEY =
   'shenxianyun.managedTrafficStatus.v1'
 // 到期占位配置的本地 UID，续费恢复后用它定位并删除占位配置。
@@ -169,11 +220,7 @@ const DELAY_TIMEOUT = 5000
 // 服务端以 5 分钟内 last_seen 判断在线。即使漏掉一轮，下一轮仍在在线窗口内。
 const HEARTBEAT_INTERVAL_MS = 120_000
 const HEARTBEAT_JITTER_MS = 20_000
-const ACCOUNT_STATE_SYNC_INTERVAL_MS = 60_000
 const MAX_TRAFFIC_REPORT_DELTA = 5 * 1024 * 1024 * 1024
-// 订阅更新轮询：仅在已连接时运行，基础间隔 10 分钟，失败时指数退避到最多 1 小时。
-const UPDATE_POLL_BASE_MS = 600_000
-const UPDATE_POLL_MAX_MS = 3_600_000
 const EXPIRED_NODE_NAME = '提取码到期，请续费使用'
 const EXPIRED_PROFILE_NAME = '提取码已到期'
 
@@ -285,9 +332,16 @@ const buildExpiredProfileYaml = () =>
     // 占位期间仍能探测到续费并自动恢复；其余流量全部走不可达的占位节点（无法上网）。
     rules: [...officialDirectRules(), 'MATCH,节点选择'],
   })
-const DESKTOP_VERSION = '2.5.32'
-const CLIENT_UA = 'JC116-Shenxianyun-Windows/2.5.32'
+const DESKTOP_VERSION = desktopBuildVersion
 const DESKTOP_PLATFORM = getSystem()
+const CLIENT_PLATFORM_LABEL = {
+  windows: 'Windows电脑',
+  macos: 'Mac电脑',
+  linux: 'Linux电脑',
+  unknown: '桌面电脑',
+}[DESKTOP_PLATFORM]
+const CLIENT_TYPE = `shenxianyun-${DESKTOP_PLATFORM}`
+const CLIENT_UA = `JC116-Shenxianyun-${{ windows: 'Windows', macos: 'macOS', linux: 'Linux', unknown: 'Desktop' }[DESKTOP_PLATFORM]}/${DESKTOP_VERSION}`
 const LIGHT_SURFACE_TEXT_COLOR = '#182033'
 const fieldSx = {
   '& .MuiInputLabel-root': {
@@ -360,30 +414,6 @@ const glassDialogPaperSx = {
   },
 }
 
-const nodeMenuPaperSx = {
-  color: LIGHT_SURFACE_TEXT_COLOR,
-  colorScheme: 'light',
-  borderRadius: '14px',
-  border: '1px solid rgba(255,255,255,.6)',
-  background:
-    'linear-gradient(160deg, rgba(255,255,255,.96), rgba(233,236,252,.94))',
-  backdropFilter: 'blur(22px)',
-  boxShadow: '0 18px 44px rgba(90,110,220,.24)',
-  '& .MuiMenuItem-root': {
-    color: LIGHT_SURFACE_TEXT_COLOR,
-    '&:hover, &.Mui-focusVisible': {
-      bgcolor: 'rgba(95,123,240,.1)',
-    },
-    '&.Mui-selected': {
-      color: LIGHT_SURFACE_TEXT_COLOR,
-      bgcolor: 'rgba(95,123,240,.16)',
-    },
-    '&.Mui-selected:hover, &.Mui-selected.Mui-focusVisible': {
-      bgcolor: 'rgba(95,123,240,.22)',
-    },
-  },
-}
-
 const getClientId = () => {
   const saved = localStorage.getItem(CLIENT_ID_STORAGE_KEY)
   if (saved) return saved
@@ -415,6 +445,8 @@ type ManagedInstallTransaction = {
 }
 
 type UpdateStateResponse = {
+  code?: string
+  subscription_revision?: string
   ok?: boolean
   update_version?: number
   expires_at?: string | null
@@ -436,6 +468,7 @@ type ClientAccountState = {
 
 type ManagedProfileUpdateResult =
   | 'managed-updated'
+  | 'managed-unchanged'
   | 'managed-detached'
   | 'unmanaged'
 
@@ -559,6 +592,8 @@ class AccessCodeStateError extends Error {
   constructor(
     message: string,
     readonly serverRejected = false,
+    readonly stateCode?: string,
+    readonly httpStatus?: number,
   ) {
     super(message)
   }
@@ -665,8 +700,6 @@ const restoreRuleSnapshot = async (
   if (!saved) throw new Error('规则恢复后的配置验证失败')
 }
 
-const DOMESTIC_API_DIRECT_RULE = `DOMAIN,${DOMESTIC_API_HOST},DIRECT`
-
 const isDomesticApiUrl = (url: string): boolean => {
   try {
     return new URL(url).hostname === DOMESTIC_API_HOST
@@ -677,19 +710,28 @@ const isDomesticApiUrl = (url: string): boolean => {
 
 // 国内 API 始终放在全局规则最前面，避免系统代理开启后又绕进代理节点。
 const ensureDomesticApiDirect = async () => {
-  const content = await readProfileFile('Merge')
+  const content = await withRequestDeadline(
+    () => readProfileFile('Merge'),
+    5000,
+  )
   const data = (yaml.load(content) as Record<string, unknown> | null) || {}
   const prepend = Array.isArray(data['prepend-rules'])
     ? (data['prepend-rules'] as unknown[])
     : []
-  data['prepend-rules'] = [
-    DOMESTIC_API_DIRECT_RULE,
-    ...prepend.filter((rule) => rule !== DOMESTIC_API_DIRECT_RULE),
-  ]
-  if (!(await saveProfileFile('Merge', yaml.dump(data, { lineWidth: -1 })))) {
+  if (
+    prepend[0] === DOMESTIC_API_DIRECT_RULE &&
+    prepend.filter((rule) => rule === DOMESTIC_API_DIRECT_RULE).length === 1
+  )
+    return
+  if (
+    !(await saveProfileFile(
+      'Merge',
+      yaml.dump(pinApiDirect(data), { lineWidth: -1 }),
+    ))
+  ) {
     throw new Error('国内 API 直连规则验证失败')
   }
-  if (!(await enhanceProfiles())) throw new Error('国内 API 直连规则应用失败')
+  // saveProfileFile already validates and applies runtime-affecting files.
 }
 
 const normalizeRuleDomain = (input: string) => {
@@ -758,14 +800,6 @@ const getNodeDelay = (proxy: IProxyItem, groupName = '') => {
   return proxy.history?.slice(-1)[0]?.delay ?? -1
 }
 
-const formatNodeLabel = (proxy: IProxyItem, groupName = '') => {
-  const delay = getNodeDelay(proxy, groupName)
-  if (delay === -2) return `${proxy.name} · 测试中`
-  if (delay === 0 || delay >= DELAY_TIMEOUT) return `${proxy.name} · 超时`
-  if (delay > 0 && delay < 100000) return `${proxy.name} · ${delay}ms`
-  return proxy.name
-}
-
 const delayRank = (proxy: IProxyItem, groupName = '') => {
   const delay = getNodeDelay(proxy, groupName)
   if (delay > 0 && delay < DELAY_TIMEOUT) return delay
@@ -774,7 +808,7 @@ const delayRank = (proxy: IProxyItem, groupName = '') => {
 }
 
 const HomePage = () => {
-  const { verge, patchVerge } = useVerge()
+  const { verge, patchVerge, mutateVerge } = useVerge()
   const { response: connectionResponse } = useConnectionData()
   const { clash, patchClash } = useClash()
   const { profiles, current, mutateProfiles } = useProfiles()
@@ -822,16 +856,33 @@ const HomePage = () => {
   const [expiresAt, setExpiresAt] = useState(
     () => localStorage.getItem(CODE_EXPIRES_STORAGE_KEY) || '',
   )
+  const [accessRestriction, setAccessRestriction] = useState(() =>
+    parseAccessRestriction(
+      localStorage.getItem(ACCESS_RESTRICTION_STORAGE_KEY),
+      savedCode,
+    ),
+  )
+  const restrictionRef = useRef<AccessRestriction | null>(accessRestriction)
+  const subscriptionMonitorRef = useRef<SubscriptionMonitor | null>(null)
+  const subscriptionCheckRef = useRef<
+    ((signal: AbortSignal) => Promise<void>) | null
+  >(null)
+  const backgroundBusyRef = useRef(false)
   const [status, setStatus] = useState(
     savedCode ? '提取码已保存，会自动检查订阅更新。' : '',
   )
   const [clientAccountState, setClientAccountState] =
     useState<ClientAccountState | null>(null)
   const [codeDialogOpen, setCodeDialogOpen] = useState(false)
+  const codeEntryActiveRef = useRef(false)
+  useEffect(() => {
+    codeEntryActiveRef.current = codeDialogOpen
+  }, [codeDialogOpen])
   const [codeImportPhase, setCodeImportPhase] =
     useState<CodeImportPhase>('input')
   const [codeImportMessage, setCodeImportMessage] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [localWorkspace, setLocalWorkspace] = useState(false)
   const portViewerRef = useRef<DialogRef>(null)
   const controllerViewerRef = useRef<DialogRef>(null)
   const webUIViewerRef = useRef<DialogRef>(null)
@@ -865,61 +916,97 @@ const HomePage = () => {
   } | null>(null)
   // 订阅更新在途互斥：防止慢请求/掉线恢复时积累并发请求打满服务器。
   const updateInFlightRef = useRef(false)
+  const autoRefreshControllerRef = useRef<AbortController | null>(null)
+  const refreshApplyInFlightRef = useRef(false)
+  useEffect(() => () => autoRefreshControllerRef.current?.abort(), [])
   const [desktopUpdate, setDesktopUpdate] =
     useState<DesktopVersionResponse | null>(null)
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    backgroundBusyRef.current = busy || manualBusy
+  }, [busy, manualBusy])
   const [modeOverride, setModeOverride] = useState('')
   const [updating, setUpdating] = useState(false)
+  const [updateInstalling, setUpdateInstalling] = useState(false)
   const [updPercent, setUpdPercent] = useState(0)
   const { updateInfo } = useUpdate(true)
   const isMacOS = getSystem() === 'macos'
   const doUpdate = useLockFn(async () => {
     if (!updateInfo?.available || updating) return
-    // macOS 没有 Apple 开发者签名/公证，就地自动更新不可靠（会被 Gatekeeper 拦）。
-    // 改为打开 Releases 页让用户手动下载安装。
+    // Match Settings: download the NAS DMG for this CPU, then install manually.
     if (isMacOS) {
       await openWebUrl(
         `https://github.com/${DOMAIN_PROFILE.githubRepository}/releases/latest`,
       ).catch(() => undefined)
       return
     }
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后更新软件')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
+    backgroundBusyRef.current = true
+    setBusy(true)
     setUpdating(true)
+    setUpdateInstalling(false)
     setUpdPercent(0)
     setStatus('正在下载更新...')
     let total = 0
     let downloaded = 0
     try {
-      await updateInfo.downloadAndInstall(
-        (event: {
-          event: string
-          data?: { contentLength?: number; chunkLength?: number }
-        }) => {
-          if (event.event === 'Started') {
-            total = event.data?.contentLength ?? 0
-          } else if (event.event === 'Progress') {
-            downloaded += event.data?.chunkLength ?? 0
-            if (total > 0) {
-              setUpdPercent(
-                Math.min(99, Math.round((downloaded / total) * 100)),
-              )
-            }
-          } else if (event.event === 'Finished') {
-            setUpdPercent(100)
+      await downloadAndInstallWithFallback(updateInfo, (event) => {
+        if (event.phase === 'checking') {
+          setStatus(
+            event.source === 'dufs'
+              ? '正在检查更新源...'
+              : '正在检查备用更新源...',
+          )
+        } else if (event.phase === 'fallback') {
+          total = 0
+          downloaded = 0
+          setUpdPercent(0)
+          setStatus('Dufs 暂不可用，正在切换 GitHub 备用源...')
+        } else if (event.phase === 'progress') {
+          total = event.contentLength ?? total
+          downloaded += event.chunkLength ?? 0
+          setStatus(
+            `正在下载更新，已接收 ${Math.round(downloaded / 1024)} KB...`,
+          )
+          if (total > 0) {
+            setUpdPercent(Math.min(99, Math.round((downloaded / total) * 100)))
           }
-        },
-      )
+        } else if (event.phase === 'verified') {
+          setUpdPercent(100)
+        } else if (event.phase === 'stopping') {
+          setUpdateInstalling(true)
+          setStatus('更新包校验通过，正在停止连接以安装...')
+        } else if (event.phase === 'installing') {
+          setUpdateInstalling(true)
+          setStatus('更新包校验通过，正在安装...')
+        }
+      })
       setStatus('更新完成，正在重启...')
       await relaunch()
-    } catch {
-      setStatus('软件下载失败，请稍后重试')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
     } finally {
       setUpdating(false)
+      setBusy(false)
+      void refreshAll().catch(() => undefined)
     }
+  })
+  const cancelUpdateDownload = useLockFn(async () => {
+    const state = await cancelAppUpdateDownload()
+    if (state === 'cancelled') setStatus('正在取消更新下载...')
+    else if (state === 'installing')
+      setStatus('正在准备安装，暂不能取消，请等待安装器启动')
+    else setStatus('更新任务已结束，可重新尝试')
   })
   const [delayTesting, setDelayTesting] = useState(false)
   const [delaySortTick, setDelaySortTick] = useState(0)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const trafficTotalsRef = useRef({ upload: 0, download: 0 })
+  const proxyTrafficReadyRef = useRef(false)
   const lastReportedTrafficRef = useRef({ upload: 0, download: 0 })
   const trafficReportRetryAfterRef = useRef(0)
   const trafficCounterRef = useRef<ManagedTrafficCounter | null>(null)
@@ -936,9 +1023,15 @@ const HomePage = () => {
     ((signal: AbortSignal) => Promise<ManagedTrafficReportOutcome>) | null
   >(null)
   const managedAuthRef = useRef<ManagedAuth | null>(null)
-  // eslint-disable-next-line @eslint-react/no-unused-state -- readiness is consumed by the subscription lifecycle effect, not JSX.
+  // presence 上报的节流状态，逻辑见 services/presence-throttle。
+  const presenceThrottleRef = useRef(createPresenceThrottleState())
+  // 服务端升级建议本次启动是否已提示过。
+  const upgradeHintShownRef = useRef(false)
+
   const [managedAuthReady, setManagedAuthReady] = useState(false)
-  const startupRefreshAttemptedRef = useRef(false)
+  const startupRefreshCompletedRef = useRef(false)
+  const previousRunningRef = useRef(false)
+  const [connectionReady, setConnectionReady] = useState(false)
   const proxyUrlRef = useRef('')
   const legacyMigrationRef = useRef('')
 
@@ -953,11 +1046,12 @@ const HomePage = () => {
       : ruleGroup
   const nodes = useMemo(() => {
     void delaySortTick
-    return [...(nodeGroup?.all || [])]
-      .filter((proxy) => !['DIRECT', 'REJECT'].includes(proxy.name))
-      .sort(
-        (a, b) => delayRank(a, nodeGroup?.name) - delayRank(b, nodeGroup?.name),
-      )
+    return sortHomeNodes(
+      (nodeGroup?.all || []).filter(
+        (proxy) => !['DIRECT', 'REJECT'].includes(proxy.name),
+      ),
+      (node) => delayRank(node, nodeGroup?.name),
+    )
   }, [nodeGroup, delaySortTick])
 
   const selectedNode = useMemo(() => {
@@ -969,6 +1063,57 @@ const HomePage = () => {
   const tunOn = verge?.enable_tun_mode || false
   const proxyStateMismatch = systemProxyConfigOn && !systemProxyOn
   const running = tunOn || systemProxyOn
+  useEffect(() => {
+    if (!running) {
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- clear a completed async controller check when OS connectivity changes.
+      setConnectionReady(false)
+      return
+    }
+    let disposed = false
+    let confirmed = 0
+    let checking = false
+    const check = async () => {
+      if (disposed || checking) return
+      checking = true
+      const ready = await withRequestDeadline(
+        () => Promise.all([getVersion(), getBaseConfig()]),
+        2500,
+      )
+        .then(
+          ([version, active]) =>
+            Boolean(version?.version) &&
+            (systemProxyOn || (tunOn && active?.tun?.enable)),
+        )
+        .catch(() => false)
+      checking = false
+      confirmed = ready ? confirmed + 1 : 0
+      if (!disposed) setConnectionReady(confirmed >= 2)
+    }
+    void check()
+    const timer = window.setInterval(check, 3000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [running, systemProxyOn, tunOn])
+  const showConnectionOptions = homeWorkspaceVisible(
+    localWorkspace,
+    running,
+    connectionReady,
+  )
+  // presence 上报只跟随「稳定后」的 running。UI 仍用 running 即时反馈，
+  // 但网络副作用必须等状态真正定下来，避免刷新/重试期间的瞬时翻转
+  // 被当成一次真实的启停，向服务端多发一对 offline+heartbeat。
+  // eslint-disable-next-line @eslint-react/no-unused-state -- 仅供 presence/流量上报的生命周期 effect 使用，UI 一律用即时的 running。
+  const [stableRunning, setStableRunning] = useState(running)
+  useEffect(() => {
+    if (running === stableRunning) return
+    const timer = window.setTimeout(
+      () => setStableRunning(running),
+      PRESENCE_STATE_DEBOUNCE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [running, stableRunning])
   const systemProxyChip: {
     label: string
     color: 'success' | 'warning' | 'default'
@@ -980,22 +1125,55 @@ const HomePage = () => {
       : proxyStateMismatch
         ? { label: '系统代理异常', color: 'warning', variant: 'filled' }
         : { label: '系统代理关闭', color: 'default', variant: 'outlined' }
-  const activeProfileName = current?.name || profiles?.current || '未导入订阅'
   const currentCode =
     savedCode &&
     current?.uid &&
     (current.uid === codeProfileUid || current.uid === expiredProfileUid)
       ? savedCode
       : ''
+  const activeCodeRef = useRef(currentCode)
+  useEffect(() => {
+    activeCodeRef.current = currentCode
+  }, [currentCode])
   const isSwitchingCode = Boolean(
     savedCode && code.trim() && code.trim() !== savedCode,
   )
   const codeExpired = Boolean(expiresAt && nowMs > parseExpireTime(expiresAt))
+  const activeRestriction =
+    accessRestriction?.accessCode === currentCode ? accessRestriction : null
+  const showRenewal = Boolean(
+    currentCode &&
+      (codeExpired ||
+        activeRestriction?.reason === 'expired' ||
+        activeRestriction?.reason === 'traffic_limit'),
+  )
+  const recordAccessRestriction = useCallback(
+    (value: string, reason: AccessRestrictionReason) => {
+      const next = { accessCode: value, reason }
+      localStorage.setItem(ACCESS_RESTRICTION_STORAGE_KEY, JSON.stringify(next))
+      restrictionRef.current = next
+      setAccessRestriction(next)
+    },
+    [],
+  )
+  const clearAccessRestriction = useCallback((value: string) => {
+    if (restrictionRef.current?.accessCode !== value) return
+    localStorage.removeItem(ACCESS_RESTRICTION_STORAGE_KEY)
+    restrictionRef.current = null
+    setAccessRestriction(null)
+  }, [])
+  const openRenewal = useCallback(
+    () =>
+      openWebUrl(
+        `${managedAuthRef.current?.apiBase || getApiBase()}/pay?action=renew&code=${encodeURIComponent(currentCode || savedCode)}`,
+      ),
+    [currentCode, savedCode],
+  )
   const allowLanOn = clash?.['allow-lan'] ?? false
   const externalControllerOn = verge?.enable_external_controller ?? false
   const dnsOverwriteOn = verge?.enable_dns_settings ?? false
   const proxyGuardOn = verge?.enable_proxy_guard ?? true
-  const powerHint = running ? '已启动，点击停止' : '还没有启动，点击启动'
+  const importantStatus = homeStatusMessage(status)
   const nodeSelectLabel = mode === 'global' ? '选择全局节点' : '选择节点'
   const codeDialogTitle =
     codeImportPhase === 'checking'
@@ -1040,37 +1218,45 @@ const HomePage = () => {
     async (
       url: string,
       init: Parameters<typeof tauriFetch>[1],
-    ): ReturnType<typeof tauriFetch> => {
-      try {
-        return await fetchWithVerifiedTls(url, init)
-      } catch (err) {
-        if (init?.signal?.aborted) throw err
-        // 国内主域名必须直连；失败后由上层自动换线路，不允许绕代理重试。
-        if (isDomesticApiUrl(url)) throw err
-        // 第 2 层：内核混合端口（在跑时）或系统代理
-        const p = proxyUrlRef.current
-        if (p) {
+    ): ReturnType<typeof tauriFetch> =>
+      withRequestDeadline(
+        async (signal) => {
+          const guarded = { ...init, signal }
+          const fetchPath = (options: Parameters<typeof tauriFetch>[1]) =>
+            fetchBufferedWithDeadline(fetchWithVerifiedTls, url, options)
           try {
-            return await fetchWithVerifiedTls(url, {
-              ...init,
-              proxy: { all: p },
-            })
-          } catch (proxyError) {
-            if (init?.signal?.aborted) throw proxyError
-            // 落到第 3 层
+            return await fetchPath(guarded)
+          } catch (err) {
+            if (signal.aborted) throw err
+            // 国内主域名必须直连；失败后由上层自动换线路，不允许绕代理重试。
+            if (isDomesticApiUrl(url)) throw err
+            // 第 2 层：内核混合端口（在跑时）或系统代理
+            const p = proxyUrlRef.current
+            if (p) {
+              try {
+                return await fetchPath({
+                  ...guarded,
+                  proxy: { all: p },
+                })
+              } catch (proxyError) {
+                if (signal.aborted) throw proxyError
+                // 落到第 3 层
+              }
+            }
+            // 第 3 层：后台下发的兜底代理（bootstrap_proxy），最后一条路
+            const boot = getBootstrapProxy()
+            if (boot && boot !== p) {
+              return await fetchPath({
+                ...guarded,
+                proxy: { all: boot },
+              })
+            }
+            throw err
           }
-        }
-        // 第 3 层：后台下发的兜底代理（bootstrap_proxy），最后一条路
-        const boot = getBootstrapProxy()
-        if (boot && boot !== p) {
-          return await fetchWithVerifiedTls(url, {
-            ...init,
-            proxy: { all: boot },
-          })
-        }
-        throw err
-      }
-    },
+        },
+        20_000,
+        init?.signal,
+      ),
     [],
   )
 
@@ -1110,7 +1296,7 @@ const HomePage = () => {
           'Content-Type': 'application/json',
           'User-Agent': CLIENT_UA,
           'X-Client-Id': getClientId(),
-          'X-Client-Type': 'shenxianyun-windows',
+          'X-Client-Type': CLIENT_TYPE,
         },
         body: JSON.stringify({ code: input, target: 'shenxianyun' }),
       })
@@ -1139,7 +1325,7 @@ const HomePage = () => {
             'Content-Type': 'application/json',
             'User-Agent': CLIENT_UA,
             'X-Client-Id': getClientId(),
-            'X-Client-Type': 'shenxianyun-windows',
+            'X-Client-Type': CLIENT_TYPE,
           },
           body: JSON.stringify({
             ticket: request.ticket,
@@ -1173,15 +1359,19 @@ const HomePage = () => {
   )
 
   const fetchManagedSubscription = useCallback(
-    async (auth: Pick<ManagedAuth, 'subscriptionUrl' | 'deviceToken'>) => {
+    async (
+      auth: Pick<ManagedAuth, 'subscriptionUrl' | 'deviceToken'>,
+      signal?: AbortSignal,
+    ) => {
       const response = await apiFetch(auth.subscriptionUrl, {
         method: 'GET',
         connectTimeout: 12000,
+        signal,
         headers: {
           Authorization: `Bearer ${auth.deviceToken}`,
           'User-Agent': CLIENT_UA,
           'X-Client-Id': getClientId(),
-          'X-Client-Type': 'shenxianyun-windows',
+          'X-Client-Type': CLIENT_TYPE,
         },
       })
       if (!response.ok) {
@@ -1189,6 +1379,8 @@ const HomePage = () => {
         throw new AccessCodeStateError(
           message || '受管订阅获取失败，请重新导入提取码',
           response.status === 401 || response.status === 403,
+          undefined,
+          response.status,
         )
       }
       const content = await response.text()
@@ -1439,7 +1631,7 @@ const HomePage = () => {
           headers: {
             'User-Agent': CLIENT_UA,
             'X-Client-Id': getClientId(),
-            'X-Client-Type': 'shenxianyun-windows',
+            'X-Client-Type': CLIENT_TYPE,
           },
         },
       )
@@ -1453,7 +1645,10 @@ const HomePage = () => {
   )
 
   const updateState = useCallback(
-    async (input: string): Promise<UpdateStateResponse> => {
+    async (
+      input: string,
+      signal?: AbortSignal,
+    ): Promise<UpdateStateResponse> => {
       const params = new URLSearchParams({
         client_id: getClientId(),
       })
@@ -1462,19 +1657,29 @@ const HomePage = () => {
         {
           method: 'GET',
           connectTimeout: 8000,
+          signal,
           headers: {
             'User-Agent': CLIENT_UA,
             'X-Client-Id': getClientId(),
-            'X-Client-Type': 'shenxianyun-windows',
+            'X-Client-Type': CLIENT_TYPE,
           },
         },
       )
       const data = (await response.json()) as UpdateStateResponse
       if (!response.ok || !data.ok) {
-        throw new AccessCodeStateError(
-          data.message || '提取码已失效或过期',
-          true,
-        )
+        if (response.status === 404 || response.status === 403) {
+          throw new AccessCodeStateError(
+            data.message || '提取码暂不可用',
+            true,
+            data.code,
+          )
+        }
+        const error = new Error('订阅状态检查暂不可用') as Error & {
+          retryAfterMs?: number
+        }
+        error.retryAfterMs =
+          Math.max(0, Number(response.headers.get('Retry-After')) || 0) * 1000
+        throw error
       }
       return data
     },
@@ -1490,7 +1695,7 @@ const HomePage = () => {
         headers: {
           'User-Agent': CLIENT_UA,
           'X-Client-Id': getClientId(),
-          'X-Client-Type': 'shenxianyun-windows',
+          'X-Client-Type': CLIENT_TYPE,
         },
       },
     )
@@ -1556,25 +1761,61 @@ const HomePage = () => {
       options?: {
         force?: boolean
         suppressValidationNotice?: boolean
+        signal?: AbortSignal
+        background?: boolean
+        allowInactive?: boolean
+        renewCredentials?: boolean
       },
     ): Promise<ManagedProfileUpdateResult> => {
       const force = options?.force ?? false
       const suppressValidationNotice =
         options?.suppressValidationNotice ?? false
-      const auth = managedAuthRef.current
-      if (!auth || auth.profileUid !== current?.uid) return 'unmanaged'
+      let auth = managedAuthRef.current
+      if (
+        !auth ||
+        (auth.profileUid !== current?.uid &&
+          !(
+            options?.allowInactive &&
+            auth.profileUid === codeProfileUid &&
+            current?.uid === expiredProfileUid
+          ))
+      )
+        return 'unmanaged'
+      const commitAuth = async (next: ManagedAuth) => {
+        assertRequestActive(options?.signal)
+        if (managedAuthRef.current !== auth)
+          throw new Error('提取码已变化，已取消旧订阅更新')
+        if (options?.background) {
+          refreshApplyInFlightRef.current = true
+          setBusy(true)
+        }
+        try {
+          await persistManagedAuth(next)
+        } finally {
+          if (options?.background) {
+            refreshApplyInFlightRef.current = false
+            setBusy(false)
+          }
+        }
+      }
       if (auth.detached && !force) {
         if (remoteVersion > auth.updateVersion) {
-          await persistManagedAuth({ ...auth, updateVersion: remoteVersion })
+          await commitAuth({ ...auth, updateVersion: remoteVersion })
         }
         setStatus('当前订阅已在本地编辑，已停止远程覆盖')
         return 'managed-detached'
       }
 
-      const localContent = await readProfileFile(auth.profileUid)
+      const profileUid = auth.profileUid
+      const localContent = await withRequestDeadline(
+        () => readProfileFile(profileUid),
+        5000,
+        options?.signal,
+      )
       const localHash = await hashManagedContent(localContent)
+      assertRequestActive(options?.signal)
       if (!force && auth.contentHash && localHash !== auth.contentHash) {
-        await persistManagedAuth({
+        await commitAuth({
           ...auth,
           detached: true,
           updateVersion: Math.max(auth.updateVersion, remoteVersion),
@@ -1583,16 +1824,86 @@ const HomePage = () => {
         return 'managed-detached'
       }
 
-      const snapshot = await readRuleSnapshot(auth.profileUid)
-      const content = await fetchManagedSubscription(auth)
-      const saved = await saveProfileFile(auth.profileUid, content, {
-        suppressValidationNotice,
-      })
-      if (!saved) throw new Error('远程订阅内容验证失败，已保留原配置')
+      const loaded = await loadManagedContent(
+        auth,
+        options?.renewCredentials ?? false,
+        {
+          download: (value) => fetchManagedSubscription(value, options?.signal),
+          status: (error) =>
+            error instanceof AccessCodeStateError
+              ? error.httpStatus
+              : undefined,
+          current: () => managedAuthRef.current,
+          persist: persistManagedAuth,
+          renew: async (previous) => {
+            // Validate the same code's current target before a user-requested rebind.
+            await updateState(previous.accessCode, options?.signal)
+            assertRequestActive(options?.signal)
+            const apiBase = getApiBase()
+            const ticket = await requestImportTicket(
+              previous.accessCode,
+              apiBase,
+            )
+            const exchange = await exchangeImportTicket({
+              ticket,
+              apiBase,
+              name: previous.accessCode,
+            })
+            assertRequestActive(options?.signal)
+            return {
+              ...previous,
+              apiBase,
+              deviceToken: exchange.device_token,
+              subscriptionUrl: exchange.subscription_url,
+              expiresAt: exchange.expires_at ?? previous.expiresAt,
+              limitMode: exchange.limit_mode || previous.limitMode,
+            }
+          },
+        },
+      )
+      auth = loaded.auth
+      const downloaded = loaded.content
+      assertRequestActive(options?.signal)
+      if (managedAuthRef.current !== auth)
+        throw new Error('提取码已变化，已取消旧订阅更新')
+      const content = prepareSubscriptionContent(localContent, downloaded)
+      if (content === null) {
+        if (
+          auth.detached ||
+          auth.contentHash !== localHash ||
+          remoteVersion > auth.updateVersion
+        ) {
+          if (options?.background) {
+            refreshApplyInFlightRef.current = true
+            setBusy(true)
+          }
+          try {
+            await persistManagedAuth({
+              ...auth,
+              contentHash: localHash,
+              detached: false,
+              updateVersion: Math.max(auth.updateVersion, remoteVersion),
+            })
+          } finally {
+            if (options?.background) {
+              refreshApplyInFlightRef.current = false
+              setBusy(false)
+            }
+          }
+        }
+        return 'managed-unchanged'
+      }
+      assertRequestActive(options?.signal)
+      if (options?.background) {
+        refreshApplyInFlightRef.current = true
+        setBusy(true)
+      }
+      let saved = false
       try {
-        await restoreRuleSnapshot(auth.profileUid, snapshot, {
+        saved = await saveProfileFile(auth.profileUid, content, {
           suppressValidationNotice,
         })
+        if (!saved) throw new Error('远程订阅内容验证失败，已保留原配置')
         const savedContent = await readProfileFile(auth.profileUid)
         await persistManagedAuth({
           ...auth,
@@ -1601,6 +1912,7 @@ const HomePage = () => {
           updateVersion: Math.max(auth.updateVersion, remoteVersion),
         })
       } catch (error) {
+        if (!saved) throw error // native validation has already restored the file
         const restored = await saveProfileFile(auth.profileUid, localContent, {
           suppressValidationNotice,
         }).catch(() => false)
@@ -1611,27 +1923,61 @@ const HomePage = () => {
             : `${message}；更新前订阅也未能自动恢复`,
           { cause: error },
         )
+      } finally {
+        if (options?.background) {
+          refreshApplyInFlightRef.current = false
+          setBusy(false)
+        }
       }
       return 'managed-updated'
     },
-    [current?.uid, fetchManagedSubscription, persistManagedAuth, setStatus],
+    [
+      current?.uid,
+      codeProfileUid,
+      expiredProfileUid,
+      fetchManagedSubscription,
+      updateState,
+      requestImportTicket,
+      exchangeImportTicket,
+      persistManagedAuth,
+      setStatus,
+    ],
   )
 
   const stopForServerLimit = useCallback(
-    async (message: string) => {
+    async (
+      message: string,
+      reason: AccessRestrictionReason = 'unavailable',
+    ) => {
+      if (!currentCode || activeCodeRef.current !== currentCode) return
+      recordAccessRestriction(currentCode, reason)
       await patchVerge({ enable_tun_mode: false }).catch(() => undefined)
       await toggleSystemProxy(false).catch(() => undefined)
       await stopCore().catch(() => undefined)
       await invalidateProxyState().catch(() => undefined)
       setStatus(message)
     },
-    [invalidateProxyState, patchVerge, toggleSystemProxy],
+    [
+      currentCode,
+      recordAccessRestriction,
+      invalidateProxyState,
+      patchVerge,
+      toggleSystemProxy,
+    ],
   )
 
   const sendClientPresence = useCallback(
     async (online: boolean) => {
       const value = currentCode
       if (!value) return
+
+      // 节流闸门。上游任何来源（状态抖动、事件重复、窗口聚焦）都可能重复触发，
+      // 这里统一挡住，保证服务端看到的上报节奏与设计一致。
+      const now = Date.now()
+      const throttle = presenceThrottleRef.current
+      if (!shouldSendPresence(throttle, online, now).send) return
+      markPresenceSent(throttle, online, now)
+
       const pending = queuePendingPresence(value, online)
       const auth = managedAuthRef.current
       if (auth?.accessCode === value) {
@@ -1646,10 +1992,10 @@ const HomePage = () => {
               'Content-Type': 'application/json',
               'User-Agent': CLIENT_UA,
               'X-Client-Id': getClientId(),
-              'X-Client-Type': 'shenxianyun-windows',
+              'X-Client-Type': CLIENT_TYPE,
             },
             body: JSON.stringify({
-              platform: 'Windows电脑',
+              platform: CLIENT_PLATFORM_LABEL,
               app_name: `${getRuntimeBrand().client_name}桌面端`,
               app_version: DESKTOP_VERSION,
               device_name: navigator.userAgent,
@@ -1670,8 +2016,32 @@ const HomePage = () => {
           bound_devices?: number
           bound_limit?: number
           show_usage_status?: boolean
+          // 服务端下发的升级建议。内置 updater 检查失败时是静默的，
+          // 这条旁路让服务端仍能把「你的版本太旧」告诉用户。
+          upgrade_hint?: {
+            message?: string
+            current_version?: string
+            min_version?: string
+            download_url?: string
+          } | null
         } | null
+        if (
+          activeCodeRef.current !== value ||
+          managedAuthRef.current?.accessCode !== value ||
+          managedAuthRef.current?.deviceToken !== auth.deviceToken
+        )
+          return
         if (!response.ok || !data?.ok) {
+          // 429 是反代的限流，不是业务错误：按 Retry-After 退避，别继续打。
+          // 反代已配置 limit_req_status 429 + Retry-After。
+          if (response.status === 429) {
+            markPresenceRateLimited(
+              throttle,
+              response.headers.get('retry-after'),
+              Date.now(),
+            )
+            throw new Error('设备状态上报被限流，稍后重试')
+          }
           if (
             online &&
             (data?.code === 'device_limit' ||
@@ -1685,12 +2055,15 @@ const HomePage = () => {
                   : data.code === 'bound_limit'
                     ? '绑定设备数量已达到套餐上限，代理已停止'
                     : '在线设备数量已达到套餐上限，代理已停止'),
+              data.code === 'traffic_limit' ? 'traffic_limit' : 'unavailable',
             )
           }
           throw new Error(data?.message || '设备状态上报失败')
         }
+        markPresenceAccepted(throttle)
         if (online) {
-          await syncExpiresAt(data.expires_at)
+          if (!updateInFlightRef.current && !backgroundBusyRef.current)
+            await syncExpiresAt(data.expires_at)
           setClientAccountState({
             dayUsed: Number(data.day_used) || 0,
             monthUsed: Number(data.month_used) || 0,
@@ -1703,6 +2076,12 @@ const HomePage = () => {
             showUsage: data.show_usage_status === true,
             updatedAt: Date.now(),
           })
+          // 每次启动只提示一次，心跳每 2 分钟一轮，不能每轮都刷状态栏。
+          const hint = data.upgrade_hint?.message?.trim()
+          if (hint && !upgradeHintShownRef.current) {
+            upgradeHintShownRef.current = true
+            setStatus(hint)
+          }
         }
         clearPendingPresence(pending.id)
         return
@@ -1710,7 +2089,7 @@ const HomePage = () => {
       const endpoint = online ? 'heartbeat' : 'offline'
       const params = new URLSearchParams({
         client_id: getClientId(),
-        platform: 'Windows电脑',
+        platform: CLIENT_PLATFORM_LABEL,
         app_name: `${getRuntimeBrand().client_name}桌面端`,
         app_version: DESKTOP_VERSION,
         device_name: navigator.userAgent,
@@ -1723,7 +2102,7 @@ const HomePage = () => {
           headers: {
             'User-Agent': CLIENT_UA,
             'X-Client-Id': getClientId(),
-            'X-Client-Type': 'shenxianyun-windows',
+            'X-Client-Type': CLIENT_TYPE,
           },
         },
       )
@@ -1732,12 +2111,23 @@ const HomePage = () => {
         message?: string
         expires_at?: string | null
       } | null
+      if (activeCodeRef.current !== value) return
       if (!response.ok || !data?.ok) {
+        if (response.status === 429) {
+          markPresenceRateLimited(
+            throttle,
+            response.headers.get('retry-after'),
+            Date.now(),
+          )
+          throw new Error('设备状态上报被限流，稍后重试')
+        }
         throw new Error(
           data?.message || `客户端${online ? '心跳' : '离线'}上报失败`,
         )
       }
-      if (online) await syncExpiresAt(data.expires_at)
+      markPresenceAccepted(throttle)
+      if (online && !updateInFlightRef.current && !backgroundBusyRef.current)
+        await syncExpiresAt(data.expires_at)
       clearPendingPresence(pending.id)
     },
     [apiFetch, currentCode, stopForServerLimit, syncExpiresAt],
@@ -1750,7 +2140,8 @@ const HomePage = () => {
   const reportClientTraffic = useCallback(
     async (signal: AbortSignal): Promise<ManagedTrafficReportOutcome> => {
       const value = currentCode
-      if (!value || !running) return { status: 'inactive' }
+      if (!value || !running || !proxyTrafficReadyRef.current)
+        return { status: 'inactive' }
 
       const current = trafficTotalsRef.current
       const auth = managedAuthRef.current
@@ -1788,11 +2179,11 @@ const HomePage = () => {
               'Content-Type': 'application/json',
               'User-Agent': CLIENT_UA,
               'X-Client-Id': getClientId(),
-              'X-Client-Type': 'shenxianyun-windows',
+              'X-Client-Type': CLIENT_TYPE,
             },
             body: JSON.stringify({
               ...pending,
-              platform: 'Windows电脑',
+              platform: CLIENT_PLATFORM_LABEL,
               app_name: `${getRuntimeBrand().client_name}桌面端`,
               app_version: DESKTOP_VERSION,
               device_name: navigator.userAgent,
@@ -1813,6 +2204,12 @@ const HomePage = () => {
           month_limit?: number
         } | null
         if (signal.aborted) throw new ManagedTrafficReportError('timeout')
+        if (
+          activeCodeRef.current !== value ||
+          managedAuthRef.current?.accessCode !== value ||
+          managedAuthRef.current?.deviceToken !== auth.deviceToken
+        )
+          return { status: 'inactive' }
         if (response.status === 429 || response.status === 503) {
           const retryAfterSeconds = Number(response.headers.get('Retry-After'))
           trafficReportRetryAfterRef.current = Number.isFinite(
@@ -1836,6 +2233,7 @@ const HomePage = () => {
             pendingManagedTrafficRef.current = undefined
             await stopForServerLimit(
               data.message || '流量额度已用尽，代理已停止',
+              'traffic_limit',
             )
           }
           throw managedTrafficResponseError(response.status, data?.code)
@@ -1866,6 +2264,7 @@ const HomePage = () => {
         }
         return { status: 'acknowledged', sequence: acknowledged.sequence }
       }
+      if (activeCodeRef.current !== value) return { status: 'inactive' }
       const previous = lastReportedTrafficRef.current
       if (
         current.upload < previous.upload ||
@@ -1899,11 +2298,11 @@ const HomePage = () => {
             'Content-Type': 'application/json',
             'User-Agent': CLIENT_UA,
             'X-Client-Id': getClientId(),
-            'X-Client-Type': 'shenxianyun-windows',
+            'X-Client-Type': CLIENT_TYPE,
           },
           body: JSON.stringify({
             client_id: getClientId(),
-            platform: 'Windows电脑',
+            platform: CLIENT_PLATFORM_LABEL,
             app_name: `${getRuntimeBrand().client_name}桌面端`,
             app_version: DESKTOP_VERSION,
             device_name: navigator.userAgent,
@@ -1993,7 +2392,7 @@ const HomePage = () => {
         {
           type: 'local',
           name: EXPIRED_PROFILE_NAME,
-          desc: '续费并重新导入提取码后自动恢复',
+          desc: '续费后自动检查并恢复订阅',
           url: '',
           option: { with_proxy: false, self_proxy: false },
         } as IProfileItem,
@@ -2020,44 +2419,93 @@ const HomePage = () => {
     return Boolean(uid && current?.uid === uid)
   }, [current?.uid])
 
-  // 续费恢复：重新校验提取码（不计入导入次数），成功则重新导入正式订阅并删除占位配置。
-  const recoverFromExpired = useCallback(async () => {
-    const value = savedCode
-    if (!value) return false
-    const expiredUid = localStorage.getItem(EXPIRED_PROFILE_UID_KEY) || ''
-    const apiBase = managedAuthRef.current?.apiBase || getApiBase()
-    const ticket = await requestImportTicket(value, apiBase)
-    const exchange = await exchangeImportTicket({
-      ticket,
-      apiBase,
-      name: value,
-    })
-    const transaction = await installManagedSubscription(
-      value,
-      exchange,
-      apiBase,
-    )
-    await transaction.commit()
-    if (expiredUid) {
-      try {
-        await deleteProfile(expiredUid)
-        localStorage.removeItem(EXPIRED_PROFILE_UID_KEY)
-        setExpiredProfileUid('')
-      } catch {
-        // 保留 UID 继续隐藏占位配置，下次恢复或手动删除时再清理。
+  // Keep the original managed URL/device credential across renewal. Only
+  // legacy installations without credentials need an automatic ticket exchange.
+  const recoverFromExpired = useCallback(
+    async (
+      remoteVersion: number,
+      signal?: AbortSignal,
+    ): Promise<ManagedProfileUpdateResult> => {
+      const value = savedCode
+      if (!value) throw new Error('尚未绑定提取码')
+      const expiredUid = localStorage.getItem(EXPIRED_PROFILE_UID_KEY) || ''
+      const auth = managedAuthRef.current
+      let result: ManagedProfileUpdateResult = 'managed-updated'
+      if (auth?.accessCode === value && auth.profileUid === codeProfileUid) {
+        result = await updateManagedProfile(remoteVersion, {
+          allowInactive: true,
+          signal,
+          background: true,
+          suppressValidationNotice: true,
+        })
+        if (result === 'unmanaged')
+          throw new Error('受管订阅身份已变化，稍后自动重试')
+        assertRequestActive(signal)
+        if (current?.uid === expiredUid && auth.profileUid !== expiredUid) {
+          refreshApplyInFlightRef.current = true
+          setBusy(true)
+          try {
+            if (!(await patchProfilesConfig({ current: auth.profileUid })))
+              throw new Error('正常订阅未能恢复，已保留原配置')
+          } finally {
+            refreshApplyInFlightRef.current = false
+            setBusy(false)
+          }
+        }
+      } else {
+        assertRequestActive(signal)
+        refreshApplyInFlightRef.current = true
+        setBusy(true)
+        try {
+          const apiBase = auth?.apiBase || getApiBase()
+          const ticket = await requestImportTicket(value, apiBase)
+          assertRequestActive(signal)
+          const exchange = await exchangeImportTicket({
+            ticket,
+            apiBase,
+            name: value,
+          })
+          assertRequestActive(signal)
+          const transaction = await installManagedSubscription(
+            value,
+            exchange,
+            apiBase,
+          )
+          try {
+            await transaction.commit()
+          } catch (error) {
+            await transaction.rollback()
+            throw error
+          }
+        } finally {
+          refreshApplyInFlightRef.current = false
+          setBusy(false)
+        }
       }
-    }
-    await mutateProfiles()
-    await refreshAll()
-    return true
-  }, [
-    exchangeImportTicket,
-    installManagedSubscription,
-    mutateProfiles,
-    refreshAll,
-    requestImportTicket,
-    savedCode,
-  ])
+      if (expiredUid) {
+        await deleteProfile(expiredUid)
+          .then(() => {
+            localStorage.removeItem(EXPIRED_PROFILE_UID_KEY)
+            setExpiredProfileUid('')
+          })
+          .catch(() => undefined)
+      }
+      void mutateProfiles().catch(() => undefined)
+      void refreshAll().catch(() => undefined)
+      return result
+    },
+    [
+      codeProfileUid,
+      current?.uid,
+      exchangeImportTicket,
+      installManagedSubscription,
+      mutateProfiles,
+      refreshAll,
+      requestImportTicket,
+      savedCode,
+      updateManagedProfile,
+    ],
+  )
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 60_000)
@@ -2195,7 +2643,7 @@ const HomePage = () => {
   }, [checkDesktopUpdate])
 
   useEffect(() => {
-    if (!running || !currentCode) return
+    if (!stableRunning || !currentCode) return
     const sendPresence = sendClientPresenceRef.current
     if (!sendPresence) return
     let timer: number | undefined
@@ -2218,37 +2666,7 @@ const HomePage = () => {
       window.removeEventListener('online', flushWhenOnline)
       sendPresence(false).catch(() => undefined)
     }
-  }, [currentCode, running])
-
-  // 核心停止时不应发送“在线”心跳，但仍需让网站续费结果及时反映到客户端。
-  // 这里只读取轻量状态，不下载订阅；窗口重新获得焦点时立即同步，前台停留时最多等待一分钟。
-  useEffect(() => {
-    if (!currentCode || running) return
-
-    const syncAccountState = () => {
-      if (document.visibilityState === 'hidden' || updateInFlightRef.current) {
-        return
-      }
-      updateState(currentCode)
-        .then((state) => syncExpiresAt(state.expires_at))
-        .catch(() => undefined)
-    }
-    const syncWhenVisible = () => {
-      if (document.visibilityState === 'visible') syncAccountState()
-    }
-
-    const timer = window.setInterval(
-      syncAccountState,
-      ACCOUNT_STATE_SYNC_INTERVAL_MS,
-    )
-    window.addEventListener('focus', syncAccountState)
-    document.addEventListener('visibilitychange', syncWhenVisible)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('focus', syncAccountState)
-      document.removeEventListener('visibilitychange', syncWhenVisible)
-    }
-  }, [currentCode, running, syncExpiresAt, updateState])
+  }, [currentCode, stableRunning])
 
   useEffect(() => {
     if (!managedAuthReady || !currentCode) {
@@ -2256,6 +2674,7 @@ const HomePage = () => {
       pendingManagedTrafficRef.current = undefined
       return
     }
+    if (!proxyTrafficReadyRef.current) return
     if (trafficCounterRef.current?.accessCode === currentCode) return
 
     const restored = parseManagedTrafficCounter(
@@ -2268,13 +2687,17 @@ const HomePage = () => {
     trafficCounterRef.current = counter
     pendingManagedTrafficRef.current = undefined
     localStorage.setItem(MANAGED_TRAFFIC_STORAGE_KEY, JSON.stringify(counter))
-  }, [currentCode, managedAuthReady])
+  }, [
+    currentCode,
+    managedAuthReady,
+    connectionResponse.data?.proxyUploadTotal,
+    connectionResponse.data?.proxyDownloadTotal,
+  ])
 
   useEffect(() => {
-    const totals = {
-      upload: connectionResponse.data?.uploadTotal ?? 0,
-      download: connectionResponse.data?.downloadTotal ?? 0,
-    }
+    const totals = desktopProxyTrafficTotals(connectionResponse.data)
+    proxyTrafficReadyRef.current = totals !== null
+    if (!totals) return
     trafficTotalsRef.current = totals
     const counter = trafficCounterRef.current
     if (!counter) return
@@ -2290,13 +2713,10 @@ const HomePage = () => {
       JSON.stringify(observed.counter),
     )
     if (hasNewTraffic) trafficSchedulerRef.current?.notifyActivity()
-  }, [
-    connectionResponse.data?.downloadTotal,
-    connectionResponse.data?.uploadTotal,
-  ])
+  }, [connectionResponse.data])
 
   useEffect(() => {
-    if (!running || !currentCode || !managedAuthReady) {
+    if (!stableRunning || !currentCode || !managedAuthReady) {
       lastReportedTrafficRef.current = trafficTotalsRef.current
       return
     }
@@ -2332,174 +2752,232 @@ const HomePage = () => {
       }
       scheduler.stop()
     }
-  }, [currentCode, managedAuthReady, running])
+  }, [currentCode, managedAuthReady, stableRunning])
 
-  // 每个客户端进程启动后刷新一次订阅；后续只在已连接时轻量检查服务端版本。
-  // 定时检查不会盲目下载整份订阅，失败时指数退避并叠加抖动，避免惊群。
-  useEffect(() => {
-    // 等当前配置真正加载完成后才消费“一次启动刷新”标记，避免启动时序较慢时漏刷。
-    if (!managedAuthReady || !currentCode || !current?.uid) return
-
-    let startupRefreshPending = false
-    if (!startupRefreshAttemptedRef.current) {
-      try {
-        startupRefreshPending =
-          sessionStorage.getItem(STARTUP_REFRESH_SESSION_KEY) !== 'done'
-        if (startupRefreshPending) {
-          sessionStorage.setItem(STARTUP_REFRESH_SESSION_KEY, 'done')
-        }
-      } catch {
-        // 极少数 WebView 禁用 sessionStorage 时仍依靠内存标记去重。
-        startupRefreshPending = true
+  const checkSubscriptionRecovery = useCallback(
+    async (signal: AbortSignal) => {
+      if (!currentCode || !current?.uid) return
+      updateInFlightRef.current = true
+      const originalDeviceToken = managedAuthRef.current?.deviceToken
+      const assertAccountCurrent = () => {
+        if (
+          activeCodeRef.current !== currentCode ||
+          localStorage.getItem(CODE_STORAGE_KEY) !== currentCode ||
+          (originalDeviceToken &&
+            managedAuthRef.current?.deviceToken !== originalDeviceToken)
+        )
+          throw new Error('提取码身份已变化，已取消旧订阅检查')
       }
-      startupRefreshAttemptedRef.current = true
-    }
-    if (!startupRefreshPending && !running) return
-
-    let cancelled = false
-    let timer: number | undefined
-    let failures = 0
-
-    // 返回 true 表示本轮网络请求成功（用于复位退避）。
-    const checkOnce = async (refreshAtStartup: boolean): Promise<boolean> => {
-      // 处于到期占位配置时，低频探测提取码是否已续费，成功则自动恢复正式订阅。
-      if (onExpiredProfile()) {
-        try {
-          const recovered = await recoverFromExpired()
-          if (recovered) {
-            setExpiredDialogOpen(false)
-            setStatus('提取码已续费，订阅已自动恢复')
-          }
-          return true
-        } catch (error) {
-          // 仍未续费/服务器拒绝 → 保持占位配置；网络错误则交给退避。
-          if (error instanceof AccessCodeStateError) return true
-          throw error
-        }
-      }
-
-      let refreshReason: SubscriptionRefreshReason | null = null
+      const startupRefresh = !startupRefreshCompletedRef.current
+      if (startupRefresh) setStatus('正在更新订阅，获取最新节点...')
       try {
-        const state = await updateState(currentCode)
-        await syncExpiresAt(state.expires_at)
-        const remoteVersion = Number(state.update_version || 0)
+        const state = await updateState(currentCode, signal)
+        assertAccountCurrent()
+        assertRequestActive(signal)
+        const wasRestricted =
+          restrictionRef.current?.accessCode === currentCode ||
+          onExpiredProfile()
+        const expiryChanged =
+          state.expires_at !== undefined &&
+          (state.expires_at?.trim() || '') !== expiresAt
         const localVersion = Number(
           localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
         )
-        refreshReason = planSubscriptionRefresh({
-          hasCurrentProfile: Boolean(current?.uid),
-          startupRefreshPending: refreshAtStartup,
+        const remoteVersion = Number(state.update_version || 0)
+        let cachedRevision = ''
+        try {
+          const cached = JSON.parse(
+            localStorage.getItem(CODE_REVISION_STORAGE_KEY) || 'null',
+          )
+          if (cached?.accessCode === currentCode)
+            cachedRevision = cached.revision || ''
+        } catch {
+          /* migrate the old timestamp cache once */
+        }
+        const needsRefresh = needsSubscriptionRefresh({
+          startup: !startupRefreshCompletedRef.current,
+          recovering: wasRestricted,
+          expiryChanged,
           remoteVersion,
           localVersion,
+          remoteRevision: state.subscription_revision,
+          localRevision: cachedRevision,
         })
-        if (refreshReason) {
-          setStatus(
-            refreshReason === 'startup'
-              ? '客户端已启动，正在刷新订阅...'
-              : '检测到后台推送，正在更新订阅...',
-          )
-          const result = await updateManagedProfile(remoteVersion, {
-            suppressValidationNotice: true,
-          })
-          if (result === 'unmanaged') {
-            await updateCurrentProfileKeepingRules(true)
+        if (expiryChanged) {
+          refreshApplyInFlightRef.current = true
+          setBusy(true)
+          try {
+            await syncExpiresAt(state.expires_at)
+          } finally {
+            refreshApplyInFlightRef.current = false
+            setBusy(false)
           }
-          localStorage.setItem(
-            CODE_UPDATE_VERSION_STORAGE_KEY,
-            String(Math.max(localVersion, remoteVersion)),
+        }
+        assertRequestActive(signal)
+        if (needsRefresh) {
+          let result: ManagedProfileUpdateResult
+          if (
+            onExpiredProfile() ||
+            ((wasRestricted || expiryChanged) && !managedAuthRef.current)
           )
+            result = await recoverFromExpired(remoteVersion, signal)
+          else
+            result = await updateManagedProfile(remoteVersion, {
+              signal,
+              background: true,
+              force: startupRefresh,
+              suppressValidationNotice: true,
+            })
+          if (result === 'unmanaged') {
+            assertRequestActive(signal)
+            refreshApplyInFlightRef.current = true
+            setBusy(true)
+            try {
+              await updateCurrentProfileKeepingRules(true)
+            } finally {
+              refreshApplyInFlightRef.current = false
+              setBusy(false)
+            }
+          }
+          assertAccountCurrent()
+          // Never consume a revision for a failed or intentionally detached update.
           if (result !== 'managed-detached') {
-            await mutateProfiles()
-            await refreshAll()
+            localStorage.setItem(
+              CODE_UPDATE_VERSION_STORAGE_KEY,
+              String(remoteVersion),
+            )
+            if (state.subscription_revision)
+              localStorage.setItem(
+                CODE_REVISION_STORAGE_KEY,
+                JSON.stringify({
+                  accessCode: currentCode,
+                  revision: state.subscription_revision,
+                }),
+              )
+            startupRefreshCompletedRef.current = true
+            try {
+              sessionStorage.setItem(STARTUP_REFRESH_SESSION_KEY, 'done')
+            } catch {
+              /* optional cache */
+            }
             setStatus(
-              refreshReason === 'startup' ? '启动订阅刷新完成' : '订阅已更新',
+              wasRestricted ? '订阅已恢复，可以启动' : '当前节点已是最新',
             )
           }
+          void mutateProfiles().catch(() => undefined)
+          void refreshAll().catch(() => undefined)
         }
-        return true
+        assertAccountCurrent()
+        clearAccessRestriction(currentCode)
+        setExpiredDialogOpen(false)
       } catch (error) {
-        const blockedByServer =
-          error instanceof AccessCodeStateError && error.serverRejected
-        const blockedByLocalExpire = Boolean(
-          expiresAt && Date.now() > parseExpireTime(expiresAt),
+        if (signal.aborted) throw error
+        if (error instanceof AccessCodeStateError && error.serverRejected) {
+          const reason = error.stateCode
+            ? restrictionReason(error.stateCode)
+            : expiresAt && Date.now() > parseExpireTime(expiresAt)
+              ? 'expired'
+              : 'unavailable'
+          recordAccessRestriction(currentCode, reason)
+          // Existing connected clients fail closed. Never turn on a stopped VPN.
+          if (running) {
+            refreshApplyInFlightRef.current = true
+            setBusy(true)
+            try {
+              if (reason === 'expired')
+                await activateExpiredProfile().catch(() => undefined)
+              await stopForServerLimit(error.message, reason)
+            } finally {
+              refreshApplyInFlightRef.current = false
+              setBusy(false)
+            }
+          }
+          setStatus(error.message)
+          return
+        }
+        if (
+          startupRefresh ||
+          restrictionRef.current?.accessCode === currentCode
         )
-
-        // 已到期：切换到占位配置并弹窗提示续费（保持连接而非直接断开）。
-        if (blockedByServer || blockedByLocalExpire) {
-          await activateExpiredProfile().catch(() => {})
-          setExpiredDialogOpen(true)
-          setStatus('提取码已到期，请续费后重新使用')
-          return true
-        }
-        if (refreshReason) {
-          console.warn('自动订阅刷新失败，已继续使用原订阅', error)
-          setStatus('新订阅暂不可用，已继续使用原订阅')
-        } else if (refreshAtStartup) {
-          setStatus('启动订阅检查未完成，将在后台重试')
-        }
-        // 纯网络错误：抛出以触发退避。
+          setStatus('暂未更新，已保留原节点，将自动重试')
+        if (!(error instanceof AccessCodeStateError))
+          void rotateApiBase(proxyUrlRef.current || undefined).catch(
+            () => undefined,
+          )
         throw error
-      }
-    }
-
-    const schedule = (refreshAtStartup = false) => {
-      if (cancelled) return
-      const backoff = Math.min(
-        UPDATE_POLL_BASE_MS * 2 ** failures,
-        UPDATE_POLL_MAX_MS,
-      )
-      // 50%~100% 抖动，打散客户端请求时间，避免惊群。
-      const delay = backoff * (0.5 + Math.random() * 0.5)
-      timer = window.setTimeout(() => run(refreshAtStartup), delay)
-    }
-
-    const run = async (refreshAtStartup = false) => {
-      if (cancelled) return
-      if (updateInFlightRef.current) {
-        if (running) schedule(refreshAtStartup)
-        return
-      }
-      updateInFlightRef.current = true
-      try {
-        await checkOnce(refreshAtStartup)
-        failures = 0
-      } catch {
-        failures = Math.min(failures + 1, 4)
-        // 网络失败可能是当前 API 线路失联，后台切换到下一条候选线路。
-        rotateApiBase(proxyUrlRef.current || undefined).catch(() => undefined)
       } finally {
         updateInFlightRef.current = false
+        if (autoRefreshControllerRef.current?.signal === signal)
+          autoRefreshControllerRef.current = null
       }
-      if (running) schedule()
-    }
+    },
+    [
+      activateExpiredProfile,
+      clearAccessRestriction,
+      current?.uid,
+      currentCode,
+      expiresAt,
+      mutateProfiles,
+      onExpiredProfile,
+      recordAccessRestriction,
+      recoverFromExpired,
+      refreshAll,
+      running,
+      stopForServerLimit,
+      syncExpiresAt,
+      updateCurrentProfileKeepingRules,
+      updateManagedProfile,
+      updateState,
+    ],
+  )
 
-    if (startupRefreshPending) {
-      void run(true)
-    } else {
-      schedule()
+  useEffect(() => {
+    subscriptionCheckRef.current = checkSubscriptionRecovery
+  }, [checkSubscriptionRecovery])
+  useEffect(() => {
+    if (!managedAuthReady || !currentCode || !current?.uid) return
+    const monitor = createSubscriptionMonitor({
+      check: (signal, controller) => {
+        autoRefreshControllerRef.current = controller
+        return subscriptionCheckRef.current?.(signal) ?? Promise.resolve()
+      },
+      canRun: () =>
+        !backgroundBusyRef.current &&
+        !updateInFlightRef.current &&
+        !refreshApplyInFlightRef.current &&
+        !codeEntryActiveRef.current,
+      intervalMs: () =>
+        document.visibilityState === 'hidden' ? 60_000 : 30_000,
+    })
+    subscriptionMonitorRef.current = monitor
+    const wake = () => {
+      // Opening or returning to the app fetches the current code's nodes again.
+      startupRefreshCompletedRef.current = false
+      monitor.wake()
     }
+    const visible = () => {
+      if (document.visibilityState === 'visible') wake()
+    }
+    monitor.start()
+    window.addEventListener('focus', wake)
+    window.addEventListener('online', wake)
+    document.addEventListener('visibilitychange', visible)
     return () => {
-      cancelled = true
-      if (timer) window.clearTimeout(timer)
+      monitor.stop()
+      if (subscriptionMonitorRef.current === monitor)
+        subscriptionMonitorRef.current = null
+      window.removeEventListener('focus', wake)
+      window.removeEventListener('online', wake)
+      document.removeEventListener('visibilitychange', visible)
     }
-  }, [
-    activateExpiredProfile,
-    current?.uid,
-    expiresAt,
-    managedAuthReady,
-    mutateProfiles,
-    onExpiredProfile,
-    recoverFromExpired,
-    refreshAll,
-    running,
-    currentCode,
-    syncExpiresAt,
-    updateCurrentProfileKeepingRules,
-    updateManagedProfile,
-    updateState,
-  ])
+  }, [current?.uid, currentCode, managedAuthReady])
 
-  const updateCurrentSubscription = useLockFn(async () => {
+  const updateCurrentSubscription = useLockFn(async (automatic = false) => {
+    if (!managedAuthReady) {
+      setStatus('正在读取本机订阅，请稍后再更新')
+      return
+    }
+    if (automatic && codeEntryActiveRef.current) return
     if (!current?.uid) {
       setStatus('还没有可更新的订阅')
       return
@@ -2512,32 +2990,71 @@ const HomePage = () => {
       return
     }
     updateInFlightRef.current = true
+    setBusy(true)
+    setStatus('正在更新订阅，获取最新节点...')
     try {
-      const remoteVersion = Number(
+      let remoteVersion = Number(
         localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
       )
-      const result = await updateManagedProfile(remoteVersion, {
-        force: true,
+      const state = currentCode ? await updateState(currentCode) : null
+      if (state) {
+        remoteVersion = Number(state.update_version || 0)
+        await syncExpiresAt(state.expires_at)
+      }
+      let result = await updateManagedProfile(remoteVersion, {
+        force: !automatic,
+        renewCredentials: !automatic,
         suppressValidationNotice: true,
       })
       if (result === 'unmanaged') {
-        await updateCurrentProfileKeepingRules(true)
+        if (currentCode) result = await recoverFromExpired(remoteVersion)
+        else await updateCurrentProfileKeepingRules(true)
       }
-      await mutateProfiles()
-      await refreshAll()
+      void mutateProfiles().catch(() => undefined)
+      void refreshAll().catch(() => undefined)
       setStatus(
-        result === 'managed-updated'
-          ? '受管订阅已重新获取；本地编辑已恢复远程管理'
-          : '订阅已更新，同提取码规则已保留',
+        result === 'managed-unchanged'
+          ? '当前节点已是最新'
+          : result === 'managed-updated'
+            ? '受管订阅已重新获取；本地编辑已恢复远程管理'
+            : '订阅已更新，同提取码规则已保留',
       )
     } catch (error) {
       console.warn('手动订阅更新失败，已继续使用原订阅', error)
-      setStatus('订阅更新失败，已继续使用原订阅')
+      setStatus('暂未更新，已保留原节点，请稍后重试')
     } finally {
       updateInFlightRef.current = false
       setBusy(false)
     }
   })
+
+  // Only stable transitions outside an import/update operation count as a disconnect.
+  useEffect(() => {
+    if (busy) return
+    const disconnected = previousRunningRef.current && !running
+    previousRunningRef.current = running
+    if (!running && !localWorkspace) {
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- external disconnect must close the connected workspace.
+      setAdvancedOpen(false)
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- external disconnect must close the connected workspace.
+      setTrafficRuleOpen(false)
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- external disconnect must close the connected workspace.
+      setProfileManagerOpen(false)
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- external disconnect must close the connected workspace.
+      setSelfCheckOpen(false)
+      // eslint-disable-next-line @eslint-react/set-state-in-effect -- external disconnect must close the connected workspace.
+      setEditorState(null)
+    }
+    if (disconnected && savedCode && current?.uid)
+      void updateCurrentSubscription(true)
+  }, [
+    busy,
+    running,
+    localWorkspace,
+    savedCode,
+    current?.uid,
+    updateCurrentSubscription,
+  ])
 
   // ===== 手动配置管理：应对 web 断网无法导入订阅时，自行导入/切换/编辑本地配置 =====
   // 只展示用户真正的配置文件（远程订阅 / 本地配置），隐藏到期占位配置、全局 Merge
@@ -2552,13 +3069,25 @@ const HomePage = () => {
   }, [expiredProfileUid, profiles?.items])
 
   const manualImportByUrl = useLockFn(async () => {
+    if (running) {
+      setStatus('请先停止代理，再导入或切换配置')
+      return
+    }
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后重试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
     const url = manualImportUrl.trim()
     if (!url) {
       setStatus('请输入订阅链接')
       return
     }
+    backgroundBusyRef.current = true
     setManualBusy(true)
     setStatus('正在导入订阅...')
+    const previousActiveCode = activeCodeRef.current
+    let selected = false
     try {
       const before = await getProfiles()
       const previousIds = new Set(
@@ -2574,6 +3103,7 @@ const HomePage = () => {
         .filter((item) => item.uid && !previousIds.has(item.uid))
         .slice(-1)[0]
       if (newest?.uid) {
+        activeCodeRef.current = ''
         const switched = await patchProfilesConfig({ current: newest.uid })
         if (!switched) {
           await deleteProfile(newest.uid).catch(() => undefined)
@@ -2582,18 +3112,83 @@ const HomePage = () => {
       } else {
         throw new Error('无法定位新导入的订阅')
       }
+      selected = true
       setManualImportUrl('')
       await mutateProfiles()
       await refreshAll()
       setStatus('订阅已导入并切换')
     } catch {
+      if (!selected) activeCodeRef.current = previousActiveCode
       setStatus('订阅导入失败，请检查链接后重试')
     } finally {
+      backgroundBusyRef.current = false
+      setManualBusy(false)
+    }
+  })
+
+  const manualImportFile = useLockFn(async (file: File, content: string) => {
+    if (running) {
+      setStatus('请先停止代理，再导入或切换配置')
+      return
+    }
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后重试')
+      return
+    }
+    backgroundBusyRef.current = true
+    setManualBusy(true)
+    autoRefreshControllerRef.current?.abort()
+    let createdUid: string | undefined
+    let selected = false
+    const previousActiveCode = activeCodeRef.current
+    try {
+      if (file.size > 8 * 1024 * 1024)
+        throw new Error('配置文件请控制在 8MB 以内')
+      const document = yaml.load(content)
+      if (!document || typeof document !== 'object' || Array.isArray(document))
+        throw new Error('请选择有效的 Clash YAML 配置文件')
+      const before = await getProfiles()
+      const previousIds = new Set((before.items || []).map((item) => item.uid))
+      await createProfile(
+        {
+          type: 'local',
+          name: file.name,
+          desc: '手动导入的本地 Clash 配置',
+          option: { with_proxy: false, self_proxy: false },
+        } as IProfileItem,
+        content,
+      )
+      const after = await getProfiles()
+      createdUid = (after.items || []).find(
+        (item) => item.uid && !previousIds.has(item.uid),
+      )?.uid
+      activeCodeRef.current = ''
+      if (!createdUid || !(await patchProfilesConfig({ current: createdUid })))
+        throw new Error('配置验证失败，已保留原配置')
+      selected = true
+      await mutateProfiles()
+      await refreshAll()
+      setStatus('文件已导入并选中，点击启动后生效')
+    } catch (error) {
+      if (!selected) activeCodeRef.current = previousActiveCode
+      if (createdUid && !selected)
+        await deleteProfile(createdUid).catch(() => undefined)
+      setStatus(
+        error instanceof Error ? error.message : '文件导入失败，已保留原配置',
+      )
+    } finally {
+      backgroundBusyRef.current = false
       setManualBusy(false)
     }
   })
 
   const manualCreateLocal = useLockFn(async () => {
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后重试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
+    backgroundBusyRef.current = true
     setManualBusy(true)
     setStatus('正在新建本地配置...')
     try {
@@ -2613,26 +3208,47 @@ const HomePage = () => {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
+      backgroundBusyRef.current = false
       setManualBusy(false)
     }
   })
 
   const manualSwitch = useLockFn(async (uid: string) => {
+    if (running) {
+      setStatus('请先停止代理，再导入或切换配置')
+      return
+    }
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后重试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
+    backgroundBusyRef.current = true
     setManualBusy(true)
+    const previousActiveCode = activeCodeRef.current
     try {
+      activeCodeRef.current = ''
       const switched = await patchProfilesConfig({ current: uid })
       if (!switched) throw new Error('配置验证失败，仍使用原配置')
       await mutateProfiles()
       await refreshAll()
       setStatus('已切换配置文件')
     } catch (error) {
+      activeCodeRef.current = previousActiveCode
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
+      backgroundBusyRef.current = false
       setManualBusy(false)
     }
   })
 
   const manualDelete = useLockFn(async (uid: string) => {
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后重试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
+    backgroundBusyRef.current = true
     setManualBusy(true)
     try {
       await deleteProfile(uid)
@@ -2658,6 +3274,7 @@ const HomePage = () => {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
+      backgroundBusyRef.current = false
       setManualBusy(false)
     }
   })
@@ -2673,6 +3290,13 @@ const HomePage = () => {
 
   const manualSaveEdit = useLockFn(async () => {
     if (!editorState) return
+    if (busy || manualBusy || refreshApplyInFlightRef.current) {
+      setStatus('正在完成配置操作，请稍后再保存')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
+    backgroundBusyRef.current = true
+    setManualBusy(true)
     try {
       const saved = await saveProfileFile(editorState.uid, editorState.value)
       if (!saved) throw new Error('配置验证失败，已恢复保存前内容')
@@ -2694,13 +3318,16 @@ const HomePage = () => {
       setEditorState(null)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      backgroundBusyRef.current = false
+      setManualBusy(false)
     }
   })
 
   const waitForCoreReady = useCallback(async () => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        const version = await getVersion()
+        const version = await withRequestDeadline(() => getVersion(), 1500)
         if (version?.version) return true
       } catch {
         // 核心刚启动时控制器会短暂不可用，继续等待。
@@ -2711,19 +3338,79 @@ const HomePage = () => {
   }, [])
 
   const waitForCoreStopped = useCallback(async () => {
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      try {
-        const version = await getVersion()
-        if (!version?.version) return true
-      } catch {
-        return true
-      }
-      await new Promise((resolve) => setTimeout(resolve, 150 + attempt * 75))
-    }
-    return false
+    // stopCore now waits for this App's owned sidecar termination or service ack.
+    // A /version response is not an ownership/lifecycle confirmation.
+    return withRequestDeadline(() => getRunningMode(), 3000)
+      .then((mode) => mode === 'NotRunning')
+      .catch(() => false)
   }, [])
 
+  const openCodeImport = useLockFn(async () => {
+    if (
+      busy ||
+      manualBusy ||
+      backgroundBusyRef.current ||
+      refreshApplyInFlightRef.current
+    ) {
+      setStatus('正在完成配置操作，请稍后再切换提取码')
+      return
+    }
+    // Own the transition before canceling old reads; pause disconnect/focus refresh.
+    codeEntryActiveRef.current = true
+    backgroundBusyRef.current = true
+    autoRefreshControllerRef.current?.abort()
+    setBusy(true)
+    setStatus('')
+    try {
+      if (running || systemProxyConfigOn) {
+        // Await native writes, without an optimistic toggle or a write timeout.
+        await patchVergeConfig({
+          enable_system_proxy: false,
+          enable_tun_mode: false,
+        })
+        mutateVerge(
+          (previous) =>
+            previous
+              ? {
+                  ...previous,
+                  enable_system_proxy: false,
+                  enable_tun_mode: false,
+                }
+              : previous,
+          false,
+        )
+        await stopCore()
+        setConnectionReady(false)
+        proxyUrlRef.current = ''
+        previousRunningRef.current = false
+        void invalidateProxyState().catch(() => undefined)
+        void refreshAll().catch(() => undefined)
+        void sendClientPresence(false).catch(() => undefined)
+      }
+      setExpiredDialogOpen(false)
+      setCode('')
+      setCodeImportPhase('input')
+      setCodeImportMessage('')
+      setCodeDialogOpen(true)
+    } catch {
+      codeEntryActiveRef.current = false
+      setStatus('未能停止当前连接，请先点击停止，再重试切换提取码')
+    } finally {
+      backgroundBusyRef.current = false
+      setBusy(false)
+    }
+  })
+
   const togglePower = useLockFn(async () => {
+    if (manualBusy) {
+      setStatus('正在保存配置，请稍后再启动')
+      return
+    }
+    if (refreshApplyInFlightRef.current) {
+      setStatus('正在完成节点配置更新，请稍后再试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
     setBusy(true)
     try {
       if (running) {
@@ -2754,34 +3441,92 @@ const HomePage = () => {
       // 不再强制客户端必须输入提取码,否则一键导入的用户会被卡住无法启动。
       if (currentCode) {
         setStatus('正在检查提取码有效期...')
-        let expired = Boolean(
-          expiresAt && Date.now() > parseExpireTime(expiresAt),
-        )
-
-        if (!expired) {
+        try {
+          const state = await withRequestDeadline(
+            (signal) => updateState(currentCode, signal),
+            5000,
+          )
+          await syncExpiresAt(state.expires_at)
+          let revision = ''
           try {
-            const state = await updateState(currentCode)
-            if (state.update_version) {
+            const cached = JSON.parse(
+              localStorage.getItem(CODE_REVISION_STORAGE_KEY) || 'null',
+            )
+            if (cached?.accessCode === currentCode)
+              revision = cached.revision || ''
+          } catch {
+            /* old cache */
+          }
+          const wasRestricted =
+            restrictionRef.current?.accessCode === currentCode
+          const refreshBeforeStart =
+            !startupRefreshCompletedRef.current ||
+            wasRestricted ||
+            codeExpired ||
+            Boolean(
+              state.subscription_revision &&
+                state.subscription_revision !== revision,
+            ) ||
+            Number(state.update_version || 0) >
+              Number(localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0)
+          if (
+            onExpiredProfile() ||
+            ((wasRestricted || codeExpired) && !managedAuthRef.current)
+          ) {
+            await recoverFromExpired(Number(state.update_version || 0))
+          } else if (refreshBeforeStart) {
+            const result = await updateManagedProfile(
+              Number(state.update_version || 0),
+              { suppressValidationNotice: true },
+            )
+            if (result === 'unmanaged')
+              await updateCurrentProfileKeepingRules(true)
+            if (result !== 'managed-detached') {
               localStorage.setItem(
                 CODE_UPDATE_VERSION_STORAGE_KEY,
-                String(state.update_version),
+                String(state.update_version || 0),
               )
-            }
-          } catch (error) {
-            if (error instanceof AccessCodeStateError && error.serverRejected) {
-              expired = true
-            } else {
-              // 网络错误（如 web 掉线）不阻止开启，仍用本地已有订阅。
-              setStatus('')
+              if (state.subscription_revision)
+                localStorage.setItem(
+                  CODE_REVISION_STORAGE_KEY,
+                  JSON.stringify({
+                    accessCode: currentCode,
+                    revision: state.subscription_revision,
+                  }),
+                )
             }
           }
-        }
-
-        // 已到期：仍允许开启开关，但切换到只含一个不可上网节点的占位配置，并弹窗提示续费。
-        // 续费后由轮询自动检测并恢复正式订阅。
-        if (expired) {
-          await activateExpiredProfile().catch(() => {})
-          setExpiredDialogOpen(true)
+          if (refreshBeforeStart) {
+            startupRefreshCompletedRef.current = true
+            try {
+              sessionStorage.setItem(STARTUP_REFRESH_SESSION_KEY, 'done')
+            } catch {
+              /* optional */
+            }
+          }
+          clearAccessRestriction(currentCode)
+        } catch (error) {
+          if (error instanceof AccessCodeStateError && error.serverRejected) {
+            const reason = error.stateCode
+              ? restrictionReason(error.stateCode)
+              : codeExpired
+                ? 'expired'
+                : 'unavailable'
+            recordAccessRestriction(currentCode, reason)
+            setExpiredDialogOpen(reason !== 'unavailable')
+            setStatus(error.message)
+            return
+          }
+          // A remembered restriction cannot be cleared by an offline startup.
+          if (
+            codeExpired ||
+            restrictionRef.current?.accessCode === currentCode ||
+            onExpiredProfile()
+          ) {
+            setStatus('尚未确认提取码恢复，请联网后重试')
+            subscriptionMonitorRef.current?.wake()
+            return
+          }
         }
       }
 
@@ -2982,7 +3727,7 @@ const HomePage = () => {
         await toggleSystemProxy(false)
       }
       await invalidateProxyState()
-      await stopCore().catch(() => undefined)
+      await stopCore()
       if (!(await waitForCoreStopped())) {
         throw new Error('旧核心未能停止，已取消切换以避免加载错误配置')
       }
@@ -3066,6 +3811,11 @@ const HomePage = () => {
 
   const importManagedRequest = useLockFn(
     async (request: ManagedImportRequest) => {
+      if (refreshApplyInFlightRef.current) {
+        setStatus('正在完成节点配置更新，请稍后重新导入')
+        return
+      }
+      autoRefreshControllerRef.current?.abort()
       const connectivity = {
         wasRunning: running,
         tunEnabled: tunOn,
@@ -3107,6 +3857,8 @@ const HomePage = () => {
           )
         }
         setCodeImportPhase('error')
+        setCodeDialogOpen(false)
+        setStatus('暂未导入，请检查提取码或网络后重试')
         setCodeImportMessage(
           recoveryFailure
             ? `安全导入失败，且自动恢复未完成：${recoveryFailure}`
@@ -3140,7 +3892,31 @@ const HomePage = () => {
     }
   }, [importManagedRequest])
 
-  const importByCode = useLockFn(async () => {
+  const importByCode = useLockFn(async (startAfterImport = false) => {
+    if (isLocalSettingsCommand(code)) {
+      if (busy || manualBusy || refreshApplyInFlightRef.current) {
+        setCodeImportMessage('正在完成配置操作，请稍后再试')
+        return
+      }
+      setLocalWorkspace(true)
+      setAdvancedOpen(true)
+      setCodeDialogOpen(false)
+      setCode('')
+      setCodeImportPhase('input')
+      setCodeImportMessage('')
+      setStatus('已进入本机高级模式，可先管理配置，再点击启动')
+      return
+    }
+    if (running || systemProxyConfigOn) {
+      setCodeImportPhase('input')
+      setCodeImportMessage('请先停止代理，再切换提取码')
+      return
+    }
+    if (refreshApplyInFlightRef.current) {
+      setCodeImportMessage('正在完成节点配置更新，请稍后再试')
+      return
+    }
+    autoRefreshControllerRef.current?.abort()
     const value = code.trim()
     if (!value) {
       setCodeImportMessage('请输入提取码')
@@ -3166,7 +3942,20 @@ const HomePage = () => {
       transaction = await activateCode(value, 3, updatePhase)
       updatePhase('starting')
       await startImportedProfile(transaction.activate)
+      if (startAfterImport) {
+        // Establish connectivity before committing: a start failure can still roll back.
+        await toggleSystemProxy(true)
+        await invalidateProxyState()
+        await refreshAll()
+      }
       await transaction.commit()
+      startupRefreshCompletedRef.current = true
+      try {
+        sessionStorage.setItem(STARTUP_REFRESH_SESSION_KEY, 'done')
+      } catch {
+        /* memory completion remains */
+      }
+      if (startAfterImport) setCodeDialogOpen(false)
       setCode('')
       updatePhase('success')
       setCodeImportMessage(
@@ -3176,14 +3965,18 @@ const HomePage = () => {
             : ''
         }`,
       )
-      setStatus('订阅已导入，可在节点恢复后连接')
+      setStatus(startAfterImport ? '已启动' : '订阅已导入，可在节点恢复后连接')
     } catch (error) {
       let recoveryFailure = ''
       if (transaction) {
         recoveryFailure = await rollbackManagedImport(transaction, connectivity)
       }
       const failedPhase = phase
+      if (startAfterImport)
+        setStatus('启动失败，已保留原订阅，请检查提取码或网络后重试')
       updatePhase('error')
+      setCodeDialogOpen(false)
+      setStatus('暂未导入，请检查提取码或网络后重试')
       setCodeImportMessage(
         recoveryFailure
           ? `新订阅未启用，且自动恢复未完成：${recoveryFailure}`
@@ -3913,28 +4706,12 @@ const HomePage = () => {
   const saveTrafficRuleAppend = async (nextRule: string) => {
     const content = await readProfileFile(rulesProfileUid)
     const data = (yaml.load(content) as Record<string, unknown> | null) || {}
-    const next = parseTrafficRule(nextRule)
-    const removeSameTarget = (rules: unknown[]) =>
-      rules.filter((rule) => {
-        const parsed = parseTrafficRule(rule)
-        return (
-          !parsed ||
-          !next ||
-          !(parsed.type === next.type && parsed.value === next.value)
-        )
-      })
-
-    if (Array.isArray(data['append-rules'])) {
-      data['append-rules'] = removeSameTarget(data['append-rules'] as unknown[])
-    }
-    const prepend = Array.isArray(data['prepend-rules'])
-      ? (data['prepend-rules'] as unknown[])
-      : []
-    // 放在最前，优先级高于订阅自带规则
-    data['prepend-rules'] = [nextRule, ...removeSameTarget(prepend)]
-
-    await saveProfileFile(rulesProfileUid, yaml.dump(data, { lineWidth: -1 }))
-    await enhanceProfiles()
+    await saveRuleEdit(() =>
+      saveProfileFile(
+        rulesProfileUid,
+        yaml.dump(upsertTrafficRule(data, nextRule), { lineWidth: -1 }),
+      ),
+    )
   }
 
   const addTrafficRule = useLockFn(async () => {
@@ -3976,15 +4753,12 @@ const HomePage = () => {
     try {
       const content = await readProfileFile(rulesProfileUid)
       const data = (yaml.load(content) as Record<string, unknown> | null) || {}
-      for (const key of ['prepend-rules', 'append-rules']) {
-        if (Array.isArray(data[key])) {
-          data[key] = (data[key] as unknown[]).filter(
-            (rule) => rule !== target.raw,
-          )
-        }
-      }
-      await saveProfileFile(rulesProfileUid, yaml.dump(data, { lineWidth: -1 }))
-      await enhanceProfiles()
+      await saveRuleEdit(() =>
+        saveProfileFile(
+          rulesProfileUid,
+          yaml.dump(removeTrafficRule(data, target.raw), { lineWidth: -1 }),
+        ),
+      )
       await loadTrafficRules()
       await refreshAll()
       setStatus(`已删除规则：${target.value}`)
@@ -4088,381 +4862,371 @@ const HomePage = () => {
         <Stack
           spacing={1}
           sx={{
-            width: 'min(735px, 100%)',
-            maxHeight: '100%',
-            minHeight: 0,
+            width: '100%',
+            height: '100%',
+            minHeight: 360,
+            flexShrink: 0,
           }}
         >
-          {updateInfo?.available && (
-            <Box
-              sx={{
-                borderRadius: '14px',
-                px: 1.5,
-                py: 1,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1.5,
-                flexWrap: 'wrap',
-                border: '1px solid rgba(41,201,156,.55)',
-                bgcolor: 'rgba(41,201,156,.16)',
-              }}
-            >
-              <BoltRounded sx={{ color: '#28c99c' }} />
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 850, color: '#eafff8' }}>
-                  发现新版本 v{updateInfo.version}
-                </Typography>
-                <Typography
-                  sx={{ fontSize: 12, color: 'rgba(214,240,250,.82)' }}
-                >
-                  {isMacOS
-                    ? '点击前往下载页，手动下载安装新版本。'
-                    : '点击「立即更新」自动下载并安装，完成后自动重启。'}
-                </Typography>
-              </Box>
-              <Button
-                variant="contained"
-                disabled={updating}
-                onClick={doUpdate}
-                sx={{
-                  bgcolor: '#28c99c',
-                  fontWeight: 800,
-                  '&:hover': { bgcolor: '#22b489' },
-                }}
-              >
-                {isMacOS
-                  ? '前往下载'
-                  : updating
-                    ? `更新中 ${updPercent}%`
-                    : '立即更新'}
-              </Button>
-            </Box>
-          )}
-          <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={1}
-            sx={{
-              alignItems: { xs: 'center', sm: 'flex-end' },
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box>
-              <Typography
-                variant="h5"
-                sx={{
-                  fontWeight: 900,
-                  letterSpacing: 0,
-                  color: '#ffffff',
-                  textShadow: '0 2px 18px rgba(90,110,220,.45)',
-                }}
-              >
-                {runtimeBrand.client_name}
-              </Typography>
-              <Typography
-                sx={{
-                  color: 'rgba(255,255,255,.92)',
-                  fontSize: 12,
-                  textShadow: '0 1px 8px rgba(90,110,220,.35)',
-                }}
-              >
-                提取码订阅 · 节点选择 · 一键连接
-              </Typography>
-            </Box>
+          {localWorkspace && (
             <Stack
               direction="row"
               spacing={1}
-              useFlexGap
+              sx={{ alignItems: 'center', flexWrap: 'wrap' }}
+            >
+              <Chip label="本机高级模式" size="small" />
+              <Typography variant="body2" sx={{ flex: 1, color: '#33406e' }}>
+                {current?.name || '请导入或选择配置'}
+              </Typography>
+              <Button
+                disabled={busy || manualBusy}
+                onClick={() => setProfileManagerOpen(true)}
+              >
+                配置管理
+              </Button>
+              <Button
+                disabled={busy || manualBusy}
+                onClick={() => setAdvancedOpen(true)}
+              >
+                高级设置
+              </Button>
+              <Button
+                disabled={busy || manualBusy}
+                onClick={() => {
+                  setLocalWorkspace(false)
+                  setAdvancedOpen(false)
+                  setProfileManagerOpen(false)
+                  setEditorState(null)
+                  setStatus('')
+                }}
+              >
+                退出高级模式
+              </Button>
+            </Stack>
+          )}
+          {currentCode && (
+            <Typography
+              role="status"
               sx={{
-                flexWrap: 'wrap',
-                '& .MuiChip-root': {
-                  bgcolor: 'rgba(255,255,255,.34)',
-                  border: '1px solid rgba(255,255,255,.55)',
-                  color: '#2e3a66',
-                  fontWeight: 800,
-                  backdropFilter: 'blur(10px)',
-                  borderRadius: '999px',
-                  px: 0.5,
-                  '& .MuiChip-icon': { color: '#4a5fc9' },
-                },
+                fontSize: 13,
+                color: codeExpired ? '#973f38' : '#33406e',
+                px: 1,
               }}
             >
-              <Chip
-                size="small"
-                icon={<BoltRounded />}
-                sx={
-                  running
-                    ? {
-                        '&.MuiChip-root': {
-                          bgcolor: 'rgba(70,205,150,.32)',
-                          borderColor: 'rgba(70,205,150,.5)',
-                        },
-                      }
-                    : undefined
-                }
-                label={running ? '在线' : '离线'}
-              />
-              <Chip
-                size="small"
-                icon={<LanguageRounded />}
-                label={mode === 'global' ? '全局模式' : '规则'}
-              />
-              <Chip
-                size="small"
-                icon={<LanRounded />}
-                label={systemProxyChip.label}
-              />
-            </Stack>
-          </Stack>
-
-          <Paper
-            elevation={0}
-            sx={{
-              borderRadius: '26px',
-              p: 1.3,
-              border: '1px solid rgba(255,255,255,.6)',
-              bgcolor: 'rgba(255,255,255,.3)',
-              boxShadow:
-                '0 24px 60px rgba(90,110,220,.28), inset 0 1px 0 rgba(255,255,255,.75)',
-              backdropFilter: 'blur(22px)',
-              overflow: 'hidden',
-              position: 'relative',
-              '&:before': {
-                content: '""',
-                position: 'absolute',
-                inset: 0,
-                pointerEvents: 'none',
+              {accountExpiryLabel(expiresAt)}
+            </Typography>
+          )}
+          {!showConnectionOptions ? (
+            <Paper
+              elevation={0}
+              sx={{
+                flex: 1,
+                minHeight: 300,
+                display: 'grid',
+                gridTemplateColumns: {
+                  xs: '1fr',
+                  sm: 'minmax(180px, .9fr) minmax(220px, 1.1fr)',
+                },
+                alignContent: 'center',
+                alignItems: 'center',
+                gap: 3,
+                p: { xs: 2.5, sm: 4 },
+                borderRadius: '26px',
+                border: '1px solid rgba(255,255,255,.6)',
                 background:
-                  'linear-gradient(120deg, rgba(255,255,255,.22), transparent 46%, rgba(150,160,250,.14))',
-                opacity: 1,
-              },
-            }}
-          >
-            <Stack
-              direction="row"
-              spacing={1.15}
-              sx={{ position: 'relative', alignItems: 'stretch' }}
+                  'linear-gradient(140deg, rgba(255,255,255,.28), rgba(255,255,255,.1))',
+                backdropFilter: 'blur(22px)',
+                boxShadow:
+                  'inset 0 1px 0 rgba(255,255,255,.7), 0 18px 48px rgba(80,100,190,.16)',
+              }}
             >
+              <Box sx={{ display: 'grid', placeItems: 'center' }}>
+                <GlassPowerButton
+                  prominent
+                  running={running}
+                  busy={busy}
+                  disabled={!savedCode && !code.trim()}
+                  onClick={() =>
+                    savedCode || running ? togglePower() : importByCode(true)
+                  }
+                />
+              </Box>
               <Stack
-                spacing={1.25}
+                spacing={2}
                 sx={{
-                  width: 180,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  py: 0,
+                  minWidth: 0,
+                  width: '100%',
+                  maxWidth: 420,
+                  justifySelf: 'center',
                 }}
               >
-                <Box
-                  sx={{
-                    width: 146,
-                    height: 146,
-                    borderRadius: '50%',
-                    display: 'grid',
-                    placeItems: 'center',
-                    background: running
-                      ? 'radial-gradient(circle, rgba(70,205,150,.3), rgba(70,205,150,.1) 62%, transparent 63%)'
-                      : 'radial-gradient(circle, rgba(255,255,255,.55), rgba(140,160,245,.18) 62%, transparent 63%)',
-                    border: '1px dashed rgba(255,255,255,.65)',
-                    boxShadow: running
-                      ? '0 0 42px rgba(70,205,150,.28)'
-                      : '0 0 42px rgba(130,150,245,.35)',
-                  }}
+                <Typography
+                  variant="h4"
+                  sx={{ fontWeight: 800, color: '#33406e' }}
                 >
-                  <Button
+                  {runtimeBrand.client_name}
+                </Typography>
+                {!savedCode ? (
+                  <TextField
+                    fullWidth
+                    label="输入提取码"
+                    value={code}
                     disabled={busy}
-                    onClick={togglePower}
-                    sx={{
-                      width: 116,
-                      height: 116,
-                      borderRadius: '50%',
-                      fontSize: 20,
-                      fontWeight: 900,
-                      color: 'white',
-                      background: running
-                        ? 'linear-gradient(135deg, #35c58f, #3f9ff2)'
-                        : 'linear-gradient(145deg, #8ea6f6 0%, #5f7bf0 55%, #4f66e8 100%)',
-                      boxShadow: running
-                        ? '0 18px 36px rgba(63,159,242,.35)'
-                        : '0 18px 38px rgba(95,123,240,.45), inset 0 2px 6px rgba(255,255,255,.35)',
-                      '&:hover': {
-                        background: running
-                          ? 'linear-gradient(135deg, #2eb582, #368fe0)'
-                          : 'linear-gradient(145deg, #80a0f5 0%, #536fee 55%, #4159e0 100%)',
-                      },
-                    }}
-                  >
-                    <Stack spacing={0.6} sx={{ alignItems: 'center' }}>
-                      <PowerSettingsNewRounded sx={{ fontSize: 34 }} />
-                      <span>{running ? '停止' : '启动'}</span>
-                    </Stack>
-                  </Button>
-                </Box>
-
-                <Stack
-                  spacing={0.7}
-                  sx={{ alignItems: 'center', width: '100%' }}
-                >
-                  <Chip
-                    size="small"
-                    color={running ? 'success' : 'default'}
-                    variant={running ? 'filled' : 'outlined'}
-                    label={powerHint}
-                    sx={{
-                      fontWeight: 800,
-                      ...(running
-                        ? {}
-                        : {
-                            bgcolor: 'rgba(255,255,255,.42)',
-                            border: '1px solid rgba(255,255,255,.65)',
-                            color: '#33406e',
-                          }),
+                    sx={fieldSx}
+                    onChange={(event) => setCode(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !busy)
+                        void importByCode(true)
                     }}
                   />
-                  <Typography
-                    sx={{
-                      fontSize: 13,
-                      color: '#33406e',
-                      fontWeight: 700,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                    }}
+                ) : (
+                  <Button
+                    variant="outlined"
+                    disabled={busy}
+                    startIcon={<KeyRounded />}
+                    sx={{ ...outlineButtonSx, py: 1.2 }}
+                    onClick={() => void openCodeImport()}
                   >
-                    {savedCode ? '🛡️ 提取码已绑定' : activeProfileName}
-                  </Typography>
-                  {expiresAt && (
-                    <Chip
-                      size="small"
-                      color={codeExpired ? 'error' : 'default'}
-                      variant="outlined"
-                      label={codeExpired ? '提取码已过期' : `到期 ${expiresAt}`}
-                    />
-                  )}
-                  {clientAccountState?.showUsage && (
-                    <Stack spacing={0.35} sx={{ alignItems: 'center' }}>
-                      <Typography sx={{ fontSize: 11, color: '#4d5a82' }}>
-                        在线 {clientAccountState.onlineDevices}/
-                        {clientAccountState.onlineLimit || '不限'} · 绑定{' '}
-                        {clientAccountState.boundDevices}/
-                        {clientAccountState.boundLimit || '不限'}
-                      </Typography>
-                      <Typography sx={{ fontSize: 11, color: '#4d5a82' }}>
-                        今日 {formatUsageBytes(clientAccountState.dayUsed)}/
-                        {clientAccountState.dayLimit
-                          ? formatUsageBytes(clientAccountState.dayLimit)
-                          : '不限'}{' '}
-                        · 本月 {formatUsageBytes(clientAccountState.monthUsed)}/
-                        {clientAccountState.monthLimit
-                          ? formatUsageBytes(clientAccountState.monthLimit)
-                          : '不限'}
-                      </Typography>
-                    </Stack>
-                  )}
-                </Stack>
+                    切换提取码
+                  </Button>
+                )}
+                {showRenewal && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<ShoppingCartRounded />}
+                    sx={outlineButtonSx}
+                    onClick={() =>
+                      void openRenewal().catch(() =>
+                        setStatus('续费页面暂未打开，请稍后重试'),
+                      )
+                    }
+                  >
+                    {activeRestriction?.reason === 'traffic_limit'
+                      ? '续费 / 恢复流量'
+                      : '续费'}
+                  </Button>
+                )}
+                {importantStatus && (
+                  <Alert severity="warning" onClose={() => setStatus('')}>
+                    {importantStatus}
+                  </Alert>
+                )}
               </Stack>
-
-              <Box
+            </Paper>
+          ) : (
+            <>
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                spacing={1}
                 sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  borderRadius: '20px',
-                  p: 1.1,
-                  border: '1px solid rgba(255,255,255,.6)',
-                  background:
-                    'linear-gradient(150deg, rgba(255,255,255,.45) 0%, rgba(226,231,252,.3) 60%, rgba(210,219,250,.26) 100%)',
-                  backdropFilter: 'blur(20px)',
-                  boxShadow:
-                    'inset 0 1px 0 rgba(255,255,255,.8), 0 8px 22px rgba(90,110,220,.12)',
+                  alignItems: { xs: 'center', sm: 'flex-end' },
+                  justifyContent: 'space-between',
                 }}
               >
+                <Box>
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      fontWeight: 900,
+                      letterSpacing: 0,
+                      color: '#ffffff',
+                      textShadow: '0 2px 18px rgba(90,110,220,.45)',
+                    }}
+                  >
+                    {runtimeBrand.client_name}
+                  </Typography>
+                </Box>
                 <Stack
+                  direction="row"
                   spacing={1}
+                  useFlexGap
                   sx={{
-                    '& .MuiButton-outlined': outlineButtonSx,
-                    '& .MuiButton-contained.Mui-disabled': {
-                      color: 'rgba(255,255,255,.56)',
+                    flexWrap: 'wrap',
+                    '& .MuiChip-root': {
+                      bgcolor: 'rgba(255,255,255,.34)',
+                      border: '1px solid rgba(255,255,255,.55)',
+                      color: '#2e3a66',
+                      fontWeight: 800,
+                      backdropFilter: 'blur(10px)',
+                      borderRadius: '999px',
+                      px: 0.5,
+                      '& .MuiChip-icon': { color: '#4a5fc9' },
                     },
                   }}
                 >
-                  <ToggleButtonGroup
-                    exclusive
-                    value={mode}
-                    onChange={changeMode}
-                    disabled={busy}
-                    fullWidth
+                  <Chip
                     size="small"
+                    icon={<BoltRounded />}
+                    sx={
+                      running
+                        ? {
+                            '&.MuiChip-root': {
+                              bgcolor: 'rgba(70,205,150,.32)',
+                              borderColor: 'rgba(70,205,150,.5)',
+                            },
+                          }
+                        : undefined
+                    }
+                    label={running ? '在线' : '离线'}
+                  />
+                  <Chip
+                    size="small"
+                    icon={<LanguageRounded />}
+                    label={mode === 'global' ? '全局模式' : '规则'}
+                  />
+                  <Chip
+                    size="small"
+                    icon={<LanRounded />}
+                    label={systemProxyChip.label}
+                  />
+                </Stack>
+              </Stack>
+
+              <Paper
+                elevation={0}
+                sx={{
+                  borderRadius: '26px',
+                  p: 1.3,
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  border: '1px solid rgba(255,255,255,.6)',
+                  bgcolor: 'rgba(255,255,255,.3)',
+                  boxShadow:
+                    '0 24px 60px rgba(90,110,220,.28), inset 0 1px 0 rgba(255,255,255,.75)',
+                  backdropFilter: 'blur(22px)',
+                  overflow: 'hidden',
+                  position: 'relative',
+                  '& .MuiButton-outlined': outlineButtonSx,
+                  '&:before': {
+                    content: '""',
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    background:
+                      'linear-gradient(120deg, rgba(255,255,255,.22), transparent 46%, rgba(150,160,250,.14))',
+                    opacity: 1,
+                  },
+                }}
+              >
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1.15}
+                  sx={{
+                    position: 'relative',
+                    alignItems: 'stretch',
+                    flex: 1,
+                    minHeight: 0,
+                  }}
+                >
+                  <Box
                     sx={{
-                      '& .MuiToggleButton-root': {
-                        py: 0.75,
-                        minHeight: 34,
-                        borderColor: 'rgba(45,65,105,.16)',
-                        fontWeight: 700,
-                        color: 'rgba(33,43,64,.9)',
-                        '&.Mui-selected': {
-                          color: '#fff',
-                          bgcolor: '#5f7bf0',
-                          boxShadow: '0 6px 16px rgba(95,123,240,.4)',
-                        },
-                        '&.Mui-selected:hover': {
-                          bgcolor: '#4f66e8',
-                        },
-                      },
+                      width: { xs: '100%', sm: 160 },
+                      flexShrink: 0,
+                      display: 'grid',
+                      placeItems: 'center',
                     }}
                   >
-                    <ToggleButton value="rule">规则模式</ToggleButton>
-                    <ToggleButton value="global">全局模式</ToggleButton>
-                  </ToggleButtonGroup>
+                    <GlassPowerButton
+                      running={running}
+                      busy={busy}
+                      onClick={togglePower}
+                    />
+                  </Box>
 
-                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>{nodeSelectLabel}</InputLabel>
-                      <Select
-                        sx={fieldSx}
-                        label={nodeSelectLabel}
-                        value={selectedNode}
-                        onChange={(event) => changeNode(event.target.value)}
-                        disabled={!nodeGroup || nodes.length === 0}
-                        MenuProps={{
-                          slotProps: {
-                            paper: {
-                              sx: nodeMenuPaperSx,
+                  <Box
+                    sx={{
+                      flex: 1,
+                      minWidth: 0,
+                      minHeight: 0,
+                      display: 'flex',
+                      borderRadius: '20px',
+                      p: 1.1,
+                      border: '1px solid rgba(255,255,255,.6)',
+                      background:
+                        'linear-gradient(150deg, rgba(255,255,255,.45) 0%, rgba(226,231,252,.3) 60%, rgba(210,219,250,.26) 100%)',
+                      backdropFilter: 'blur(20px)',
+                      boxShadow:
+                        'inset 0 1px 0 rgba(255,255,255,.8), 0 8px 22px rgba(90,110,220,.12)',
+                    }}
+                  >
+                    <Stack
+                      spacing={1}
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 0,
+                        '& .MuiButton-outlined': outlineButtonSx,
+                        '& .MuiButton-contained.Mui-disabled': {
+                          color: 'rgba(255,255,255,.56)',
+                        },
+                      }}
+                    >
+                      <ToggleButtonGroup
+                        exclusive
+                        value={mode}
+                        onChange={changeMode}
+                        disabled={busy}
+                        fullWidth
+                        size="small"
+                        sx={{
+                          '& .MuiToggleButton-root': {
+                            py: 0.75,
+                            minHeight: 34,
+                            borderColor: 'rgba(45,65,105,.16)',
+                            fontWeight: 700,
+                            color: 'rgba(33,43,64,.9)',
+                            '&.Mui-selected': {
+                              color: '#fff',
+                              bgcolor: '#5f7bf0',
+                              boxShadow: '0 6px 16px rgba(95,123,240,.4)',
+                            },
+                            '&.Mui-selected:hover': {
+                              bgcolor: '#4f66e8',
                             },
                           },
                         }}
                       >
-                        {nodes.map((node) => (
-                          <MenuItem key={node.name} value={node.name}>
-                            {formatNodeLabel(node, nodeGroup?.name)}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <Button
-                      variant="outlined"
-                      startIcon={<SpeedRounded />}
-                      disabled={busy || delayTesting || nodes.length === 0}
-                      onClick={testNodeDelay}
-                      sx={{ minWidth: 104 }}
-                    >
-                      {delayTesting ? '测试中' : '测试连通性'}
-                    </Button>
-                  </Stack>
+                        <ToggleButton value="rule">规则模式</ToggleButton>
+                        <ToggleButton value="global">全局模式</ToggleButton>
+                      </ToggleButtonGroup>
 
+                      <NodeSelectionPanel
+                        label={nodeSelectLabel}
+                        nodes={nodes.map((node) => ({
+                          name: node.name,
+                          delay: getNodeDelay(node, nodeGroup?.name),
+                          automatic: isAutomaticNode(node),
+                        }))}
+                        selected={selectedNode}
+                        timeoutMs={DELAY_TIMEOUT}
+                        disabled={busy || !nodeGroup}
+                        testing={delayTesting}
+                        onSelect={changeNode}
+                        onTest={testNodeDelay}
+                      />
+                    </Stack>
+                  </Box>
+                </Stack>
+                <Stack spacing={1} sx={{ mt: 1.25, position: 'relative' }}>
                   <Stack
                     direction="row"
                     spacing={1}
                     useFlexGap
-                    sx={{ flexWrap: 'wrap' }}
+                    sx={{
+                      flexWrap: 'wrap',
+                      '& .MuiButton-root': {
+                        whiteSpace: 'nowrap',
+                        minWidth: 'max-content',
+                        minHeight: 36,
+                      },
+                    }}
                   >
                     <Button
                       variant="contained"
                       startIcon={<KeyRounded />}
                       disabled={busy}
-                      onClick={() => {
-                        setCode('')
-                        setCodeImportPhase('input')
-                        setCodeImportMessage('')
-                        setCodeDialogOpen(true)
-                      }}
+                      onClick={() => void openCodeImport()}
                       sx={{
                         flex: '1 1 132px',
                         background: 'linear-gradient(135deg, #7f97f4, #5f7bf0)',
@@ -4475,7 +5239,11 @@ const HomePage = () => {
                         },
                       }}
                     >
-                      {savedCode ? '切换提取码' : '导入订阅'}
+                      {savedCode
+                        ? running
+                          ? '断开并切换提取码'
+                          : '切换提取码'
+                        : '导入订阅'}
                     </Button>
                     {!isTunModeAvailable && (
                       <Button
@@ -4567,7 +5335,7 @@ const HomePage = () => {
                       variant="outlined"
                       startIcon={<CloudSyncRounded />}
                       disabled={busy}
-                      onClick={updateCurrentSubscription}
+                      onClick={() => updateCurrentSubscription()}
                       sx={{ flex: '1 1 116px' }}
                     >
                       更新订阅
@@ -4596,46 +5364,7 @@ const HomePage = () => {
                     </Button>
                   </Stack>
 
-                  <Stack
-                    direction="row"
-                    spacing={0.8}
-                    sx={{
-                      alignItems: 'center',
-                      borderRadius: '12px',
-                      px: 1.2,
-                      py: 0.7,
-                      bgcolor: 'rgba(255,255,255,.4)',
-                      border: '1px solid rgba(255,255,255,.6)',
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        width: 18,
-                        height: 18,
-                        borderRadius: '50%',
-                        bgcolor: '#5f7bf0',
-                        color: '#fff',
-                        fontSize: 12,
-                        fontWeight: 900,
-                        display: 'grid',
-                        placeItems: 'center',
-                        flexShrink: 0,
-                      }}
-                    >
-                      i
-                    </Box>
-                    <Typography
-                      sx={{
-                        fontSize: 12.5,
-                        color: '#33406e',
-                        fontWeight: 600,
-                      }}
-                    >
-                      测试连通性后，节点名后显示数字(毫秒)即代表该节点连接正常，可放心使用。
-                    </Typography>
-                  </Stack>
-
-                  {status && (
+                  {importantStatus && (
                     <Alert
                       severity={
                         status.includes('失败') ||
@@ -4645,14 +5374,15 @@ const HomePage = () => {
                           : 'info'
                       }
                       sx={{ py: 0.35 }}
+                      onClose={() => setStatus('')}
                     >
-                      {status}
+                      {importantStatus}
                     </Alert>
                   )}
                 </Stack>
-              </Box>
-            </Stack>
-          </Paper>
+              </Paper>
+            </>
+          )}
           <ClashPortViewer ref={portViewerRef} />
           <ControllerViewer ref={controllerViewerRef} />
           <WebUIViewer ref={webUIViewerRef} />
@@ -4674,6 +5404,100 @@ const HomePage = () => {
             </DialogTitle>
             <DialogContent sx={{ pt: 1.5 }}>
               <Stack spacing={1.25}>
+                {updateInfo?.available && (
+                  <Box
+                    sx={{
+                      borderRadius: '14px',
+                      px: 1.5,
+                      py: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1.5,
+                      flexWrap: 'wrap',
+                      border: '1px solid rgba(41,201,156,.55)',
+                      bgcolor: 'rgba(41,201,156,.16)',
+                    }}
+                  >
+                    <BoltRounded sx={{ color: '#28c99c' }} />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 850, color: '#eafff8' }}>
+                        发现新版本 v{updateInfo.version}
+                      </Typography>
+                      <Typography
+                        sx={{ fontSize: 12, color: 'rgba(214,240,250,.82)' }}
+                      >
+                        {isMacOS
+                          ? '点击前往下载页，手动下载安装新版本。'
+                          : '点击「立即更新」自动下载并安装，完成后自动重启。'}
+                      </Typography>
+                    </Box>
+                    <Button
+                      variant="contained"
+                      disabled={updating}
+                      onClick={doUpdate}
+                      sx={{
+                        bgcolor: '#28c99c',
+                        fontWeight: 800,
+                        '&:hover': { bgcolor: '#22b489' },
+                      }}
+                    >
+                      {isMacOS
+                        ? '前往下载'
+                        : updating
+                          ? updateInstalling
+                            ? '正在准备安装'
+                            : updPercent > 0
+                              ? `更新中 ${updPercent}%`
+                              : '正在下载更新'
+                          : '立即更新'}
+                    </Button>
+                    {updating && !updateInstalling && (
+                      <Button
+                        onClick={cancelUpdateDownload}
+                        sx={{ color: '#eafff8' }}
+                      >
+                        取消下载
+                      </Button>
+                    )}
+                  </Box>
+                )}
+
+                {currentCode && (
+                  <Typography sx={{ fontSize: 13 }}>
+                    {accountExpiryLabel(expiresAt)}
+                  </Typography>
+                )}
+                {currentCode && clientAccountState?.showUsage && (
+                  <Paper
+                    elevation={0}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: '14px',
+                      bgcolor: 'rgba(255,255,255,.6)',
+                    }}
+                  >
+                    <Typography sx={{ fontWeight: 800, mb: 0.5 }}>
+                      账号用量
+                    </Typography>
+                    <Typography sx={{ fontSize: 12 }}>
+                      今日 {formatUsageBytes(clientAccountState.dayUsed)} /{' '}
+                      {clientAccountState.dayLimit
+                        ? formatUsageBytes(clientAccountState.dayLimit)
+                        : '不限'}
+                      {' · '}本月{' '}
+                      {formatUsageBytes(clientAccountState.monthUsed)} /{' '}
+                      {clientAccountState.monthLimit
+                        ? formatUsageBytes(clientAccountState.monthLimit)
+                        : '不限'}
+                    </Typography>
+                    <Typography sx={{ fontSize: 12 }}>
+                      在线 {clientAccountState.onlineDevices}/
+                      {clientAccountState.onlineLimit || '不限'}
+                      {' · '}绑定 {clientAccountState.boundDevices}/
+                      {clientAccountState.boundLimit || '不限'}
+                    </Typography>
+                  </Paper>
+                )}
                 <Paper
                   elevation={0}
                   sx={{
@@ -5101,6 +5925,7 @@ const HomePage = () => {
                 <Typography sx={{ fontSize: 13, color: 'rgba(36,46,66,.66)' }}>
                   选择匹配类型、填写内容、选择要走的节点。例如「域名后缀
                   google.com 走日本节点」「IP 段 1.1.1.1/24 走 DIRECT」。
+                  自定义规则排在全部官网服务规则之后、订阅其他规则之前。
                 </Typography>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                   <FormControl size="small" sx={{ minWidth: 124 }}>
@@ -5552,7 +6377,7 @@ const HomePage = () => {
             </DialogActions>
           </Dialog>
           <Dialog
-            open={codeDialogOpen}
+            open={codeDialogOpen && codeImportPhase !== 'error'}
             onClose={() => {
               if (busy) return
               setCode('')
@@ -5783,7 +6608,7 @@ const HomePage = () => {
                   <Button
                     variant="contained"
                     disabled={busy || !code.trim()}
-                    onClick={importByCode}
+                    onClick={() => importByCode()}
                     sx={{
                       minWidth: 104,
                       background: 'linear-gradient(135deg, #5f7bf0, #4159e0)',
@@ -5798,6 +6623,16 @@ const HomePage = () => {
                 <>
                   <Button
                     onClick={() => {
+                      setCode('')
+                      setCodeImportMessage('')
+                      setCodeImportPhase('input')
+                      setCodeDialogOpen(false)
+                    }}
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    onClick={() => {
                       setCodeImportPhase('input')
                       setCodeImportMessage('')
                     }}
@@ -5807,7 +6642,7 @@ const HomePage = () => {
                   <Button
                     variant="contained"
                     startIcon={<RefreshRounded />}
-                    onClick={importByCode}
+                    onClick={() => importByCode()}
                   >
                     重新检测
                   </Button>
@@ -5850,6 +6685,11 @@ const HomePage = () => {
             </DialogTitle>
             <DialogContent sx={{ pt: 1.5 }}>
               <Stack spacing={1.6}>
+                {importantStatus && (
+                  <Alert severity="warning" onClose={() => setStatus('')}>
+                    {importantStatus}
+                  </Alert>
+                )}
                 <Typography sx={{ fontSize: 12, color: 'rgba(36,46,66,.62)' }}>
                   web 断网或无法导入提取码订阅时，可在此手动导入其它 Clash
                   订阅链接、新建/编辑本地配置，并随时切换当前使用的配置文件。
@@ -5882,6 +6722,18 @@ const HomePage = () => {
                     导入
                   </Button>
                 </Stack>
+                <Box
+                  sx={{
+                    pointerEvents: manualBusy || busy ? 'none' : 'auto',
+                    opacity: manualBusy ? 0.5 : 1,
+                  }}
+                >
+                  <FileInput
+                    onChange={(file, content) => {
+                      void manualImportFile(file, content)
+                    }}
+                  />
+                </Box>
                 <Button
                   size="small"
                   variant="outlined"
@@ -6001,23 +6853,23 @@ const HomePage = () => {
             slotProps={{ paper: { sx: glassDialogPaperSx } }}
           >
             <DialogTitle sx={{ fontWeight: 900, pb: 0.5 }}>
-              提取码已到期
+              {activeRestriction?.reason === 'traffic_limit'
+                ? '流量额度已用尽'
+                : '提取码已到期'}
             </DialogTitle>
             <DialogContent sx={{ pt: 1.5 }}>
               <Typography sx={{ fontSize: 13.5, lineHeight: 1.7 }}>
-                当前提取码已到期，已自动切换到「{EXPIRED_NODE_NAME}
-                」占位节点，暂时无法上网。
-                <br />
-                请续费后重新导入提取码即可恢复；续费成功后也会自动检测并恢复正常订阅。
+                {activeRestriction?.reason === 'traffic_limit'
+                  ? '当前流量额度已用尽。'
+                  : '当前提取码已到期。'}
+                网站续费、管理员加时或额度恢复后，客户端会自动检查并更新订阅，无需重新导入。
               </Typography>
             </DialogContent>
             <DialogActions sx={{ px: 3, pb: 2.5 }}>
               <Button
                 variant="contained"
                 onClick={() => {
-                  openWebUrl(
-                    `${getApiBase()}/pay?action=renew&code=${encodeURIComponent(savedCode)}`,
-                  ).catch(() => undefined)
+                  void openRenewal().catch(() => undefined)
                 }}
                 sx={{
                   background: 'linear-gradient(135deg, #5f7bf0, #4159e0)',
@@ -6027,16 +6879,8 @@ const HomePage = () => {
               >
                 去续费
               </Button>
-              <Button
-                onClick={() => {
-                  setExpiredDialogOpen(false)
-                  setCode('')
-                  setCodeImportPhase('input')
-                  setCodeImportMessage('')
-                  setCodeDialogOpen(true)
-                }}
-              >
-                重新导入提取码
+              <Button disabled={busy} onClick={() => void openCodeImport()}>
+                切换提取码
               </Button>
               <Button onClick={() => setExpiredDialogOpen(false)}>关闭</Button>
             </DialogActions>

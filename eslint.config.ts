@@ -39,6 +39,9 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: {
         projectService: {
+          // Feature regression scripts are type-aware too. A parity update
+          // stages more than the default eight explicit tooling files.
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 64,
           allowDefaultProject: [
             'eslint.config.ts',
             `vite.config.mts`,

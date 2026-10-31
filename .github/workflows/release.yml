@@ -197,6 +197,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
+      - name: Setup accounting core Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -336,6 +342,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+
+      - name: Setup accounting core Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@master
@@ -500,6 +512,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+
+      - name: Setup accounting core Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
 
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@master

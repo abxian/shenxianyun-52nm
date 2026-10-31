@@ -230,3 +230,12 @@ Rust 测试/构建要求 sidecar 产物已准备；本机缺少 sidecar 时，�
 ## License
 
 GPL-3.0 License. See [License here](./LICENSE) for details.
+
+
+### 2026-10-31 功能同步候选 2.5.39
+
+本候选同步神仙云 2.5.52 及后续排序防御修复，保留本站 site-profile、安装身份、updater 公钥及 GitHub 52nm 分发路线。仅代理流量依赖 scripts/build-proxy-core.py 在所有目标编译固定版本的定制核心，stable/alpha 均安装相同统计实现；不得改回普通上游 sidecar 后仍声称支持 proxy-only。
+
+打开软件刷新受管订阅、规则编辑和完整官网块后的排序、续费/迁移恢复、隐藏技术错误弹层、切码等待 owned 核心退出及 Windows 下载取消/超时恢复在源码中。Mac 仍打开本站 GitHub Release 页面，Linux 更新入口保持原有行为。原数据与未确认累计不清理；旧全流量缓存不迁入新代理计数命名空间。用户切码/停止需确认旧核退出后再替换配置。
+
+构建门禁包括 branded profile/独立线路断言、Rust Clippy、规则与生命周期纯模块、TS 操作状态机、真实核心直连排除/短连接保留测试；质量构建、正式发布、分发和真实设备验收分别记载。尚未通过云端构建与签名验包时，不应把版本候选当成已发布。

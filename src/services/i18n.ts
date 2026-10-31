@@ -1,6 +1,8 @@
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
+import { replaceVisibleBrand } from './visible-brand'
+
 export const supportedLanguages = [
   'en',
   'ru',
@@ -128,14 +130,22 @@ export const loadLanguage = async (language: string) => {
   }
 }
 
-i18n.use(initReactI18next).init({
-  resources: {},
-  lng: FALLBACK_LANGUAGE,
-  fallbackLng: FALLBACK_LANGUAGE,
-  interpolation: {
-    escapeValue: false,
-  },
-})
+i18n
+  .use({
+    type: 'postProcessor',
+    name: 'visibleBrand',
+    process: replaceVisibleBrand,
+  })
+  .use(initReactI18next)
+  .init({
+    resources: {},
+    lng: FALLBACK_LANGUAGE,
+    fallbackLng: FALLBACK_LANGUAGE,
+    postProcess: ['visibleBrand'],
+    interpolation: {
+      escapeValue: false,
+    },
+  })
 
 export const changeLanguage = async (language: string) => {
   const targetLanguage = resolveLanguage(language)

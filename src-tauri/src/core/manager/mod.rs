@@ -1,5 +1,6 @@
 mod config;
 mod lifecycle;
+mod sidecar_exit;
 mod state;
 
 use anyhow::Result;
@@ -11,7 +12,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Instant,
 };
@@ -43,6 +44,8 @@ pub struct CoreManager {
     state: ArcSwap<State>,
     sidecar_state_lock: Mutex<()>,
     lifecycle_lock: tokio::sync::Mutex<()>,
+    sidecar_exit: tokio::sync::watch::Sender<Option<u32>>,
+    stopping_sidecar_pid: AtomicU32,
     last_update: ArcSwapOption<Instant>,
     config_update_in_progress: AtomicBool,
 }
@@ -68,6 +71,8 @@ impl Default for CoreManager {
             state: ArcSwap::new(Arc::new(State::default())),
             sidecar_state_lock: Mutex::new(()),
             lifecycle_lock: tokio::sync::Mutex::new(()),
+            sidecar_exit: tokio::sync::watch::channel(None).0,
+            stopping_sidecar_pid: AtomicU32::new(0),
             last_update: ArcSwapOption::new(None),
             config_update_in_progress: AtomicBool::new(false),
         }
@@ -113,14 +118,17 @@ impl CoreManager {
     }
 
     pub fn clear_running_child_sidecar(&self, pid: u32) -> bool {
+        self.sidecar_exit.send_replace(Some(pid));
         let _guard = self.sidecar_state_lock.lock();
         let state = self.state.load();
         let is_current = state.child_sidecar.load_full().is_some_and(|child| child.pid() == pid);
-        if is_current {
+        let stopping = self.stopping_sidecar_pid.load(Ordering::Acquire) == pid;
+        if is_current || stopping {
+            self.stopping_sidecar_pid.store(0, Ordering::Release);
             state.child_sidecar.store(None);
             state.running_mode.store(Arc::new(RunningMode::NotRunning));
         }
-        is_current
+        is_current || stopping
     }
 
     pub fn set_last_update(&self, time: Instant) {

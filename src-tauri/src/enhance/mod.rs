@@ -1,6 +1,9 @@
+mod automatic;
 mod chain;
+mod editor_rules;
 pub mod field;
 mod merge;
+mod official_dns;
 mod script;
 pub mod seq;
 mod tun;
@@ -605,6 +608,10 @@ pub async fn enhance() -> Result<(Mapping, HashSet<String>, HashMap<String, Resu
     let proxies_item = profile.proxies_item;
     let groups_item = profile.groups_item;
     let global_merge = profile.global_merge;
+    let editor_rules = match &global_merge.data {
+        ChainType::Merge(merge) => merge.clone(),
+        _ => Mapping::new(),
+    };
     let global_script = profile.global_script;
     let profile_name = profile.profile_name;
 
@@ -643,12 +650,16 @@ pub async fn enhance() -> Result<(Mapping, HashSet<String>, HashMap<String, Resu
     let mut config = apply_builtin_scripts(config, clash_core, enable_builtin).await;
 
     config = cleanup_proxy_groups(config);
+    automatic::ensure_automatic_selection(&mut config);
 
     config = use_tun(config, enable_tun);
     config = use_sort(config);
 
     // dns settings
     config = apply_dns_settings(config, enable_dns_settings).await;
+
+    official_dns::apply(&mut config).map_err(anyhow::Error::msg)?;
+    editor_rules::apply(&mut config, &editor_rules).map_err(anyhow::Error::msg)?;
 
     let mut exists_keys_set = HashSet::new();
     exists_keys_set.extend(exists_keys);

@@ -4,7 +4,7 @@ pub mod handle;
 pub mod hotkey;
 pub mod logger;
 pub mod manager;
-mod notification;
+pub(crate) mod notification;
 pub mod service;
 pub mod sysopt;
 pub mod timer;
