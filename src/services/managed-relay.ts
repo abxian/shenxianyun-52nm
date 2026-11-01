@@ -48,6 +48,39 @@ const valid = (value?: RelayGrant): value is RelayGrant =>
 export const relayEndpoint = (operation: string) =>
   `${RELAY_BASE}/v1/client/${RELAY_TENANT}/${operation}`
 
+/** Presence and relay-grant requests share the same direct network transport,
+ * but must keep their overseas fallback after that transport is exhausted.
+ * Other operations have their own entry/subscription/traffic recovery policy.
+ */
+export const fetchControlWithRelay = async (
+  url: string,
+  init: Parameters<typeof tauriFetch>[1],
+  fetcher: RelayFetch,
+): Promise<Response> => {
+  const operation = new URL(url).pathname.match(
+    /^\/api\/v2\/client\/(heartbeat|offline|relay)$/,
+  )?.[1]
+  if (!operation) return fetcher(url, init)
+  try {
+    const response = await fetcher(url, init)
+    if (response.status < 500) return response
+  } catch (error) {
+    if (init?.signal?.aborted) throw error
+  }
+  return fetcher(
+    relayEndpoint(operation === 'relay' ? 'authorize' : operation),
+    {
+      ...init,
+      method: 'POST',
+      headers: {
+        ...Object.fromEntries(new Headers(init?.headers).entries()),
+        'Content-Type': 'application/json',
+      },
+      body: operation === 'relay' ? '{}' : init?.body,
+    },
+  )
+}
+
 export const prepareRelay = async (
   auth: ManagedAuth,
   fetcher: RelayFetch,

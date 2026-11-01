@@ -192,3 +192,79 @@ test('one-use exchange denial is never replayed into fallback and arbitrary path
     ),
   )
 })
+
+test('control transport retains authenticated overseas presence and grant fallback', async () => {
+  for (const operation of ['heartbeat', 'offline', 'relay']) {
+    const calls = []
+    const r = await mod.fetchControlWithRelay(
+      `https://api.example.test/api/v2/client/${operation}`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synthetic-device' },
+        body: '{"platform":"windows"}',
+      },
+      async (url, init) => {
+        calls.push([url, init])
+        if (url.startsWith('https://api.example.test'))
+          throw new Error('primary offline')
+        return reply(200, { ok: true })
+      },
+    )
+    assert.equal(r.status, 200)
+    assert.equal(
+      calls[1][0],
+      `https://ll.sxnn.de/v1/client/${tenant}/${operation === 'relay' ? 'authorize' : operation}`,
+    )
+    assert.equal(
+      new Headers(calls[1][1].headers).get('authorization'),
+      'Bearer synthetic-device',
+    )
+    assert.equal(
+      calls[1][1].body,
+      operation === 'relay' ? '{}' : '{"platform":"windows"}',
+    )
+  }
+})
+test('control denials/cancellation do not replay and unrelated operations are not forwarded', async () => {
+  for (const status of [401, 403, 429]) {
+    let count = 0
+    const r = await mod.fetchControlWithRelay(
+      'https://api.example.test/api/v2/client/heartbeat',
+      {},
+      async () => {
+        count++
+        return reply(status, { ok: false })
+      },
+    )
+    assert.equal(r.status, status)
+    assert.equal(count, 1)
+  }
+  const controller = new AbortController()
+  let count = 0
+  await assert.rejects(
+    mod.fetchControlWithRelay(
+      'https://api.example.test/api/v2/client/heartbeat',
+      { signal: controller.signal },
+      async () => {
+        count++
+        controller.abort()
+        throw controller.signal.reason
+      },
+    ),
+    { name: 'AbortError' },
+  )
+  assert.equal(count, 1)
+  count = 0
+  await assert.rejects(
+    mod.fetchControlWithRelay(
+      'https://api.example.test/admin',
+      {},
+      async () => {
+        count++
+        throw new Error('unavailable')
+      },
+    ),
+    /unavailable/,
+  )
+  assert.equal(count, 1)
+})
