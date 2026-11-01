@@ -140,6 +140,12 @@ jobs:
         with:
           run_install: false
 
+      - name: Install Go for accounting core
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
       - name: Install Node
         if: github.event.inputs[matrix.input] == 'true'
         uses: actions/setup-node@v6
