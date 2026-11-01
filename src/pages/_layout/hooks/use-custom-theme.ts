@@ -6,6 +6,7 @@ import {
 import { Theme as TauriOsTheme } from '@tauri-apps/api/window'
 import { useEffect, useMemo } from 'react'
 
+import { glassFeedbackComponents } from '@/components/base/glass-feedback'
 import { useVerge } from '@/hooks/use-verge'
 import { defaultDarkTheme, defaultTheme } from '@/pages/_theme'
 import { useSetThemeMode, useThemeMode } from '@/services/states'
@@ -199,6 +200,10 @@ export const useCustomTheme = () => {
       })
     }
 
+    muiTheme = createTheme(muiTheme, {
+      components: glassFeedbackComponents(mode === 'dark'),
+    })
+
     const rootEle = document.documentElement
     if (rootEle) {
       const backgroundColor = mode === 'light' ? '#ECECEC' : dt.background_color
@@ -290,20 +295,16 @@ export const useCustomTheme = () => {
         }
 
         /* 修复可能的白色边框 */
-        .MuiPaper-root {
+        .MuiPaper-root:not(.MuiDialog-paper):not(.MuiAlert-root) {
           border-color: var(--window-border-color) !important;
         }
 
         /* 确保模态框和对话框也使用暗色主题 */
         .MuiDialog-paper {
-          background-color: ${mode === 'light' ? '#ffffff' : '#2E303D'} !important;
+          background-color: ${mode === 'light' ? 'rgba(245,247,255,.78)' : 'rgba(36,43,66,.84)'} !important;
         }
 
-        /* 移除可能的白色点或线条 */
-        * {
-          outline: none !important;
-          box-shadow: none !important;
-        }
+        /* Preserve glass feedback shadows and keyboard focus outlines. */
       `
 
       styleElement.innerHTML = effectiveInjectedCss + globalStyles

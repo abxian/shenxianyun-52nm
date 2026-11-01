@@ -59,6 +59,7 @@ import { getBaseConfig, getVersion } from 'tauri-plugin-mihomo-api'
 
 import { BasePage, type DialogRef } from '@/components/base'
 import { GlassPowerButton } from '@/components/home/glass-power-button'
+import { GlassUpdateNotice } from '@/components/home/glass-update-notice'
 import { NodeSelectionPanel } from '@/components/home/node-selection-panel'
 import { WebsiteTestViewer } from '@/components/home/website-test-viewer'
 import { EditorViewer } from '@/components/profile/editor-viewer'
@@ -168,6 +169,8 @@ import {
   type ManagedTrafficReportOutcome,
   type ManagedTrafficSchedulerTransition,
 } from '@/services/managed-traffic-scheduler'
+import { refreshSubscriptionOnRequest } from '@/services/manual-subscription-refresh'
+import { fetchOfficialManagement } from '@/services/official-management-http'
 import {
   createPresenceThrottleState,
   markPresenceAccepted,
@@ -937,7 +940,20 @@ const HomePage = () => {
   const [updating, setUpdating] = useState(false)
   const [updateInstalling, setUpdateInstalling] = useState(false)
   const [updPercent, setUpdPercent] = useState(0)
-  const { updateInfo } = useUpdate(true)
+  const {
+    updateInfo,
+    checkUpdate,
+    loading: updateChecking,
+    error: updateCheckError,
+  } = useUpdate(true)
+  const [desktopRelease, setDesktopRelease] =
+    useState<DesktopVersionResponse | null>(null)
+  const [desktopChecking, setDesktopChecking] = useState(false)
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState('')
+  const availableUpdateVersion = updateInfo?.available
+    ? updateInfo.version
+    : desktopRelease?.latest_version
+
   const isMacOS = getSystem() === 'macos'
   const doUpdate = useLockFn(async () => {
     if (!updateInfo?.available || updating) return
@@ -1232,20 +1248,18 @@ const HomePage = () => {
           const guarded = { ...init, signal }
           const fetchPath = (options: Parameters<typeof tauriFetch>[1]) =>
             fetchBufferedWithDeadline(fetchWithVerifiedTls, url, options)
-          if (
-            (isDomesticApiUrl(url) || new URL(url).hostname === 'll.sxnn.de') &&
-            proxyUrlRef.current
-          ) {
-            try {
-              const directProxy = await getManagementProxy()
-              return await fetchPath({
-                ...guarded,
-                connectTimeout: 2000,
-                proxy: { all: directProxy },
-              })
-            } catch (directError) {
-              if (signal.aborted) throw directError
-            }
+          const official =
+            isDomesticApiUrl(url) ||
+            new URL(url).hostname === 'll.sxnn.de' ||
+            listApiBases().some(
+              (base) => new URL(base).origin === new URL(url).origin,
+            ) ||
+            url === managedAuthRef.current?.subscriptionUrl
+          if (official) {
+            return fetchOfficialManagement(url, guarded, {
+              fetch: fetchWithVerifiedTls,
+              directProxy: getManagementProxy,
+            })
           }
           try {
             return await fetchPath(guarded)
@@ -1763,41 +1777,47 @@ const HomePage = () => {
   )
 
   const checkDesktopUpdate = useCallback(async () => {
-    const response = await tauriFetch(
-      `${getApiBase()}/api/desktop-version?platform=${encodeURIComponent(DESKTOP_PLATFORM)}`,
-      {
-        method: 'GET',
-        connectTimeout: 8000,
-        headers: {
-          'User-Agent': CLIENT_UA,
-          'X-Client-Id': getClientId(),
-          'X-Client-Type': CLIENT_TYPE,
+    setDesktopChecking(true)
+    try {
+      const response = await apiFetch(
+        `${getApiBase()}/api/desktop-version?platform=${encodeURIComponent(DESKTOP_PLATFORM)}`,
+        {
+          method: 'GET',
+          connectTimeout: 8000,
+          headers: {
+            'User-Agent': CLIENT_UA,
+            'X-Client-Id': getClientId(),
+            'X-Client-Type': CLIENT_TYPE,
+          },
         },
-      },
-    )
-    const data = (await response.json()) as DesktopVersionResponse
-    const latestVersion = data.latest_version?.trim() || ''
-    const downloadUrl = data.download_url?.trim() || ''
-    const hasDownload =
-      Boolean(downloadUrl) ||
-      (DESKTOP_PLATFORM === 'linux' &&
-        Boolean(data.linux_deb_url?.trim() || data.linux_rpm_url?.trim()))
-    if (
-      response.ok &&
-      data.ok &&
-      latestVersion &&
-      hasDownload &&
-      compareVersion(latestVersion, DESKTOP_VERSION) > 0
-    ) {
-      setDesktopUpdate({
-        ...data,
-        latest_version: latestVersion,
-        download_url: downloadUrl,
-        linux_deb_url: data.linux_deb_url?.trim() || '',
-        linux_rpm_url: data.linux_rpm_url?.trim() || '',
-      })
+      )
+      const data = (await response.json()) as DesktopVersionResponse
+      if (!response.ok || !data.ok) throw new Error('Version check unavailable')
+      const latestVersion = data.latest_version?.trim() || ''
+      const downloadUrl = data.download_url?.trim() || ''
+      const hasDownload =
+        Boolean(downloadUrl) ||
+        (DESKTOP_PLATFORM === 'linux' &&
+          Boolean(data.linux_deb_url?.trim() || data.linux_rpm_url?.trim()))
+      if (
+        response.ok &&
+        data.ok &&
+        latestVersion &&
+        hasDownload &&
+        compareVersion(latestVersion, DESKTOP_VERSION) > 0
+      ) {
+        setDesktopRelease({
+          ...data,
+          latest_version: latestVersion,
+          download_url: downloadUrl,
+          linux_deb_url: data.linux_deb_url?.trim() || '',
+          linux_rpm_url: data.linux_rpm_url?.trim() || '',
+        })
+      }
+    } finally {
+      setDesktopChecking(false)
     }
-  }, [])
+  }, [apiFetch])
 
   const updateCurrentProfileKeepingRules = useCallback(
     async (suppressFailureNotice = false) => {
@@ -2731,8 +2751,9 @@ const HomePage = () => {
   }, [checkServerConnection])
 
   useEffect(() => {
-    // jc116 桌面版本检查已停用，改用 Tauri updater（GitHub releases 签名自动更新）
-    // checkDesktopUpdate().catch(() => undefined)
+    // Metadata is a visible fallback when the signed updater endpoint is offline.
+    // It never installs a binary or replaces the signed updater verification.
+    void checkDesktopUpdate().catch(() => undefined)
   }, [checkDesktopUpdate])
 
   useEffect(() => {
@@ -3089,20 +3110,32 @@ const HomePage = () => {
       let remoteVersion = Number(
         localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
       )
-      const state = currentCode ? await updateState(currentCode) : null
-      if (state) {
-        remoteVersion = Number(state.update_version || 0)
-        await syncExpiresAt(state.expires_at)
-      }
-      let result = await updateManagedProfile(remoteVersion, {
-        force: !automatic,
-        renewCredentials: !automatic,
-        suppressValidationNotice: true,
+      let result = 'unmanaged' as ManagedProfileUpdateResult
+      const auth = managedAuthRef.current
+      await refreshSubscriptionOnRequest({
+        managed: Boolean(
+          auth &&
+            auth.profileUid === current.uid &&
+            auth.accessCode === currentCode,
+        ),
+        readState: () =>
+          currentCode ? updateState(currentCode) : Promise.resolve(null),
+        download: async (state) => {
+          if (state) {
+            remoteVersion = Number(state.update_version || 0)
+            await syncExpiresAt(state.expires_at)
+          }
+          result = await updateManagedProfile(remoteVersion, {
+            force: !automatic,
+            renewCredentials: !automatic,
+            suppressValidationNotice: true,
+          })
+          if (result === 'unmanaged') {
+            if (currentCode) result = await recoverFromExpired(remoteVersion)
+            else await updateCurrentProfileKeepingRules(true)
+          }
+        },
       })
-      if (result === 'unmanaged') {
-        if (currentCode) result = await recoverFromExpired(remoteVersion)
-        else await updateCurrentProfileKeepingRules(true)
-      }
       void mutateProfiles().catch(() => undefined)
       void refreshAll().catch(() => undefined)
       setStatus(
@@ -3114,7 +3147,7 @@ const HomePage = () => {
       )
     } catch (error) {
       console.warn('手动订阅更新失败，已继续使用原订阅', error)
-      setStatus('暂未更新，已保留原节点，请稍后重试')
+      setStatus('暂时无法获取最新节点，原订阅已保留；请检查网络后重试')
     } finally {
       updateInFlightRef.current = false
       setBusy(false)
@@ -4961,6 +4994,49 @@ const HomePage = () => {
             flexShrink: 0,
           }}
         >
+          <GlassUpdateNotice
+            currentVersion={DESKTOP_VERSION}
+            version={availableUpdateVersion}
+            checking={updateChecking || desktopChecking}
+            checkFailed={Boolean(updateCheckError)}
+            updating={updating}
+            installing={updateInstalling}
+            percent={updPercent}
+            downloadLabel={
+              !updateInfo?.available
+                ? '查看更新'
+                : isMacOS
+                  ? '前往下载'
+                  : DESKTOP_PLATFORM === 'linux'
+                    ? '查看安装包'
+                    : '立即更新'
+            }
+            expanded={dismissedUpdateVersion !== availableUpdateVersion}
+            onExpand={(expanded) =>
+              setDismissedUpdateVersion(
+                expanded ? '' : availableUpdateVersion || '',
+              )
+            }
+            onCheck={() => {
+              void Promise.allSettled([
+                checkUpdate(),
+                checkDesktopUpdate(),
+              ]).then((results) => {
+                const updater = results[0]
+                const checked =
+                  results[1].status === 'fulfilled' ||
+                  (updater.status === 'fulfilled' && !updater.value.error)
+                setStatus(
+                  checked ? '新版检查已完成' : '暂时无法检查新版，请稍后重试',
+                )
+              })
+            }}
+            onUpdate={() => {
+              if (updateInfo?.available) void doUpdate()
+              else if (desktopRelease) setDesktopUpdate(desktopRelease)
+            }}
+            onCancel={() => void cancelUpdateDownload()}
+          />
           {localWorkspace && (
             <Stack
               direction="row"
@@ -5507,18 +5583,16 @@ const HomePage = () => {
                       alignItems: 'center',
                       gap: 1.5,
                       flexWrap: 'wrap',
-                      border: '1px solid rgba(41,201,156,.55)',
-                      bgcolor: 'rgba(41,201,156,.16)',
+                      border: '1px solid rgba(255,255,255,.65)',
+                      bgcolor: 'rgba(255,255,255,.22)',
                     }}
                   >
-                    <BoltRounded sx={{ color: '#28c99c' }} />
+                    <BoltRounded sx={{ color: '#5f70bd' }} />
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 850, color: '#eafff8' }}>
+                      <Typography sx={{ fontWeight: 850, color: '#33406e' }}>
                         发现新版本 v{updateInfo.version}
                       </Typography>
-                      <Typography
-                        sx={{ fontSize: 12, color: 'rgba(214,240,250,.82)' }}
-                      >
+                      <Typography sx={{ fontSize: 12, color: '#4356a2' }}>
                         {isMacOS
                           ? '点击前往下载页，手动下载安装新版本。'
                           : '点击「立即更新」自动下载并安装，完成后自动重启。'}
@@ -5529,9 +5603,10 @@ const HomePage = () => {
                       disabled={updating}
                       onClick={doUpdate}
                       sx={{
-                        bgcolor: '#28c99c',
+                        bgcolor: 'rgba(98,122,217,.14)',
                         fontWeight: 800,
-                        '&:hover': { bgcolor: '#22b489' },
+                        color: '#374a9c',
+                        '&:hover': { bgcolor: 'rgba(98,122,217,.23)' },
                       }}
                     >
                       {isMacOS
@@ -5547,7 +5622,7 @@ const HomePage = () => {
                     {updating && !updateInstalling && (
                       <Button
                         onClick={cancelUpdateDownload}
-                        sx={{ color: '#eafff8' }}
+                        sx={{ color: '#33406e' }}
                       >
                         取消下载
                       </Button>

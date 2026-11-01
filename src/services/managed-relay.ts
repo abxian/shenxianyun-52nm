@@ -27,7 +27,7 @@ const within = async (
   const abort = () => controller.abort()
   init?.signal?.addEventListener('abort', abort, { once: true })
   if (init?.signal?.aborted) controller.abort()
-  const timer = setTimeout(abort, 4500)
+  const timer = setTimeout(abort, 10_000)
   try {
     return await fetcher(url, { ...init, signal: controller.signal })
   } finally {

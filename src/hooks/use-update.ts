@@ -54,10 +54,11 @@ export const useUpdate = (enabled: boolean = true) => {
       return result
     },
     enabled: shouldCheck,
-    retry: 2,
+    retry: 0,
     staleTime: 60 * 60 * 1000,
     refetchInterval: 24 * 60 * 60 * 1000,
     refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
   })
 
   // Shared last check timestamp

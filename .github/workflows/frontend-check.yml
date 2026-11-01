@@ -119,7 +119,7 @@ jobs:
         run: pnpm test:code-switch
 
       - name: Update cancellation and managed subscription recovery
-        run: node --experimental-strip-types --test scripts/test-client-recovery.mjs
+        run: node --experimental-strip-types --test scripts/test-client-recovery.mjs scripts/test-management-refresh.mjs scripts/test-managed-relay.mjs
 
       - name: Rule editor persistence and failure tests
         run: node --experimental-strip-types --test scripts/test-traffic-rule-editor.mjs

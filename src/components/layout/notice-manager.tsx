@@ -232,7 +232,7 @@ export const NoticeManager: React.FC<NoticeManagerProps> = ({ position }) => {
         >
           <Alert
             severity={notice.type}
-            variant="filled"
+            variant="standard"
             sx={{
               width: '100%',
               minWidth: 0,
