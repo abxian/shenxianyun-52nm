@@ -23,6 +23,9 @@ jobs:
       - name: Verify native update and core-stop recovery
         run: python3 scripts/test-client-recovery-core.py
 
+      - name: Verify cold-start rule mode and runtime mode isolation
+        run: python3 scripts/test-startup-mode.py
+
       - name: Verify production rule enhancement
         run: python3 scripts/test-rule-editor-core.py "$RUNNER_TEMP/rules-edited.yaml" "$RUNNER_TEMP/rules-deleted.yaml"
 
@@ -119,7 +122,7 @@ jobs:
         run: pnpm test:code-switch
 
       - name: Update cancellation and managed subscription recovery
-        run: node --experimental-strip-types --test scripts/test-client-recovery.mjs scripts/test-management-refresh.mjs scripts/test-managed-relay.mjs
+        run: node --experimental-strip-types --test scripts/test-client-recovery.mjs scripts/test-management-refresh.mjs scripts/test-managed-relay.mjs scripts/test-subscription-refresh-feedback.mjs
 
       - name: Rule editor persistence and failure tests
         run: node --experimental-strip-types --test scripts/test-traffic-rule-editor.mjs

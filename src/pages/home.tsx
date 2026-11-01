@@ -61,6 +61,10 @@ import { BasePage, type DialogRef } from '@/components/base'
 import { GlassPowerButton } from '@/components/home/glass-power-button'
 import { GlassUpdateNotice } from '@/components/home/glass-update-notice'
 import { NodeSelectionPanel } from '@/components/home/node-selection-panel'
+import {
+  SubscriptionRefreshNotice,
+  type SubscriptionRefreshNoticeValue,
+} from '@/components/home/subscription-refresh-notice'
 import { WebsiteTestViewer } from '@/components/home/website-test-viewer'
 import { EditorViewer } from '@/components/profile/editor-viewer'
 import { FileInput } from '@/components/profile/file-input'
@@ -184,6 +188,7 @@ import {
   createSubscriptionMonitor,
   type SubscriptionMonitor,
 } from '@/services/subscription-monitor'
+import { refreshWithFeedback } from '@/services/subscription-refresh-feedback'
 import {
   DOMESTIC_API_DIRECT_RULE,
   pinApiDirect,
@@ -883,6 +888,9 @@ const HomePage = () => {
   const [status, setStatus] = useState(
     savedCode ? '提取码已保存，会自动检查订阅更新。' : '',
   )
+  const [subscriptionNotice, setSubscriptionNotice] =
+    useState<SubscriptionRefreshNoticeValue | null>(null)
+  const [subscriptionRefreshing, setSubscriptionRefreshing] = useState(false)
   const [clientAccountState, setClientAccountState] =
     useState<ClientAccountState | null>(null)
   const [codeDialogOpen, setCodeDialogOpen] = useState(false)
@@ -941,15 +949,9 @@ const HomePage = () => {
   const [updating, setUpdating] = useState(false)
   const [updateInstalling, setUpdateInstalling] = useState(false)
   const [updPercent, setUpdPercent] = useState(0)
-  const {
-    updateInfo,
-    checkUpdate,
-    loading: updateChecking,
-    error: updateCheckError,
-  } = useUpdate(true)
+  const { updateInfo } = useUpdate(true)
   const [desktopRelease, setDesktopRelease] =
     useState<DesktopVersionResponse | null>(null)
-  const [desktopChecking, setDesktopChecking] = useState(false)
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState('')
   const availableUpdateVersion = updateInfo?.available
     ? updateInfo.version
@@ -1780,45 +1782,40 @@ const HomePage = () => {
   )
 
   const checkDesktopUpdate = useCallback(async () => {
-    setDesktopChecking(true)
-    try {
-      const response = await apiFetch(
-        `${getApiBase()}/api/desktop-version?platform=${encodeURIComponent(DESKTOP_PLATFORM)}`,
-        {
-          method: 'GET',
-          connectTimeout: 8000,
-          headers: {
-            'User-Agent': CLIENT_UA,
-            'X-Client-Id': getClientId(),
-            'X-Client-Type': CLIENT_TYPE,
-          },
+    const response = await apiFetch(
+      `${getApiBase()}/api/desktop-version?platform=${encodeURIComponent(DESKTOP_PLATFORM)}`,
+      {
+        method: 'GET',
+        connectTimeout: 8000,
+        headers: {
+          'User-Agent': CLIENT_UA,
+          'X-Client-Id': getClientId(),
+          'X-Client-Type': CLIENT_TYPE,
         },
-      )
-      const data = (await response.json()) as DesktopVersionResponse
-      if (!response.ok || !data.ok) throw new Error('Version check unavailable')
-      const latestVersion = data.latest_version?.trim() || ''
-      const downloadUrl = data.download_url?.trim() || ''
-      const hasDownload =
-        Boolean(downloadUrl) ||
-        (DESKTOP_PLATFORM === 'linux' &&
-          Boolean(data.linux_deb_url?.trim() || data.linux_rpm_url?.trim()))
-      if (
-        response.ok &&
-        data.ok &&
-        latestVersion &&
-        hasDownload &&
-        compareVersion(latestVersion, DESKTOP_VERSION) > 0
-      ) {
-        setDesktopRelease({
-          ...data,
-          latest_version: latestVersion,
-          download_url: downloadUrl,
-          linux_deb_url: data.linux_deb_url?.trim() || '',
-          linux_rpm_url: data.linux_rpm_url?.trim() || '',
-        })
-      }
-    } finally {
-      setDesktopChecking(false)
+      },
+    )
+    const data = (await response.json()) as DesktopVersionResponse
+    if (!response.ok || !data.ok) throw new Error('Version check unavailable')
+    const latestVersion = data.latest_version?.trim() || ''
+    const downloadUrl = data.download_url?.trim() || ''
+    const hasDownload =
+      Boolean(downloadUrl) ||
+      (DESKTOP_PLATFORM === 'linux' &&
+        Boolean(data.linux_deb_url?.trim() || data.linux_rpm_url?.trim()))
+    if (
+      response.ok &&
+      data.ok &&
+      latestVersion &&
+      hasDownload &&
+      compareVersion(latestVersion, DESKTOP_VERSION) > 0
+    ) {
+      setDesktopRelease({
+        ...data,
+        latest_version: latestVersion,
+        download_url: downloadUrl,
+        linux_deb_url: data.linux_deb_url?.trim() || '',
+        linux_rpm_url: data.linux_rpm_url?.trim() || '',
+      })
     }
   }, [apiFetch])
 
@@ -3092,67 +3089,102 @@ const HomePage = () => {
   const updateCurrentSubscription = useLockFn(async (automatic = false) => {
     if (!managedAuthReady) {
       setStatus('正在读取本机订阅，请稍后再更新')
+      if (!automatic)
+        setSubscriptionNotice({
+          id: Date.now(),
+          severity: 'info',
+          message: '正在读取本机订阅，请稍后再更新',
+        })
       return
     }
     if (automatic && codeEntryActiveRef.current) return
     if (!current?.uid) {
       setStatus('还没有可更新的订阅')
+      if (!automatic)
+        setSubscriptionNotice({
+          id: Date.now(),
+          severity: 'info',
+          message: '还没有可更新的订阅',
+        })
       return
     }
     setBusy(true)
-    setStatus('正在更新订阅...')
     if (updateInFlightRef.current) {
       setStatus('订阅正在后台更新，请稍后再试')
+      if (!automatic)
+        setSubscriptionNotice({
+          id: Date.now(),
+          severity: 'info',
+          message: '订阅正在后台更新，请稍后再试',
+        })
       setBusy(false)
       return
     }
     updateInFlightRef.current = true
     setBusy(true)
     setStatus('正在更新订阅，获取最新节点...')
+    setSubscriptionRefreshing(true)
+    if (!automatic) setSubscriptionNotice(null)
     try {
-      let remoteVersion = Number(
-        localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
-      )
-      let result = 'unmanaged' as ManagedProfileUpdateResult
-      const auth = managedAuthRef.current
-      await refreshSubscriptionOnRequest({
-        managed: Boolean(
-          auth &&
-            auth.profileUid === current.uid &&
-            auth.accessCode === currentCode,
-        ),
-        readState: () =>
-          currentCode ? updateState(currentCode) : Promise.resolve(null),
-        download: async (state) => {
-          if (state) {
-            remoteVersion = Number(state.update_version || 0)
-            await syncExpiresAt(state.expires_at)
-          }
-          result = await updateManagedProfile(remoteVersion, {
-            force: !automatic,
-            renewCredentials: !automatic,
-            suppressValidationNotice: true,
+      await refreshWithFeedback({
+        automatic,
+        notify: (feedback) => {
+          // eslint-disable-next-line @eslint-react/set-state-in-effect -- only manual clicks notify after awaiting the transaction; automatic refreshes stay silent.
+          setSubscriptionNotice({ ...feedback, id: Date.now() })
+        },
+        refresh: async () => {
+          let remoteVersion = Number(
+            localStorage.getItem(CODE_UPDATE_VERSION_STORAGE_KEY) || 0,
+          )
+          let result = 'unmanaged' as ManagedProfileUpdateResult
+          const auth = managedAuthRef.current
+          await refreshSubscriptionOnRequest({
+            managed: Boolean(
+              auth &&
+                auth.profileUid === current.uid &&
+                auth.accessCode === currentCode,
+            ),
+            readState: () =>
+              currentCode ? updateState(currentCode) : Promise.resolve(null),
+            download: async (state) => {
+              if (state) {
+                remoteVersion = Number(state.update_version || 0)
+                await syncExpiresAt(state.expires_at)
+              }
+              result = await updateManagedProfile(remoteVersion, {
+                force: !automatic,
+                renewCredentials: !automatic,
+                suppressValidationNotice: true,
+              })
+              if (result === 'unmanaged') {
+                if (currentCode)
+                  result = await recoverFromExpired(remoteVersion)
+                else await updateCurrentProfileKeepingRules(true)
+              }
+            },
           })
-          if (result === 'unmanaged') {
-            if (currentCode) result = await recoverFromExpired(remoteVersion)
-            else await updateCurrentProfileKeepingRules(true)
-          }
+          void mutateProfiles().catch(() => undefined)
+          void refreshAll().catch(() => undefined)
+          setStatus(
+            result === 'managed-unchanged'
+              ? '当前节点已是最新'
+              : result === 'managed-updated'
+                ? '受管订阅已重新获取；本地编辑已恢复远程管理'
+                : '订阅已更新，同提取码规则已保留',
+          )
+          return result === 'managed-detached'
+            ? 'detached'
+            : result === 'managed-unchanged'
+              ? 'unchanged'
+              : 'updated'
         },
       })
-      void mutateProfiles().catch(() => undefined)
-      void refreshAll().catch(() => undefined)
-      setStatus(
-        result === 'managed-unchanged'
-          ? '当前节点已是最新'
-          : result === 'managed-updated'
-            ? '受管订阅已重新获取；本地编辑已恢复远程管理'
-            : '订阅已更新，同提取码规则已保留',
-      )
     } catch (error) {
       console.warn('手动订阅更新失败，已继续使用原订阅', error)
       setStatus('暂时无法获取最新节点，原订阅已保留；请检查网络后重试')
     } finally {
       updateInFlightRef.current = false
+      setSubscriptionRefreshing(false)
       setBusy(false)
     }
   })
@@ -4960,6 +4992,10 @@ const HomePage = () => {
         overflow: 'hidden',
       }}
     >
+      <SubscriptionRefreshNotice
+        notice={subscriptionNotice}
+        onClose={() => setSubscriptionNotice(null)}
+      />
       <Box
         sx={{
           height: '100%',
@@ -4998,42 +5034,14 @@ const HomePage = () => {
           }}
         >
           <GlassUpdateNotice
-            currentVersion={DESKTOP_VERSION}
             version={availableUpdateVersion}
-            checking={updateChecking || desktopChecking}
-            checkFailed={Boolean(updateCheckError)}
             updating={updating}
             installing={updateInstalling}
             percent={updPercent}
-            downloadLabel={
-              !updateInfo?.available
-                ? '查看更新'
-                : isMacOS
-                  ? '前往下载'
-                  : DESKTOP_PLATFORM === 'linux'
-                    ? '查看安装包'
-                    : '立即更新'
+            dismissed={dismissedUpdateVersion === availableUpdateVersion}
+            onDismiss={() =>
+              setDismissedUpdateVersion(availableUpdateVersion || '')
             }
-            expanded={dismissedUpdateVersion !== availableUpdateVersion}
-            onExpand={(expanded) =>
-              setDismissedUpdateVersion(
-                expanded ? '' : availableUpdateVersion || '',
-              )
-            }
-            onCheck={() => {
-              void Promise.allSettled([
-                checkUpdate(),
-                checkDesktopUpdate(),
-              ]).then((results) => {
-                const updater = results[0]
-                const checked =
-                  results[1].status === 'fulfilled' ||
-                  (updater.status === 'fulfilled' && !updater.value.error)
-                setStatus(
-                  checked ? '新版检查已完成' : '暂时无法检查新版，请稍后重试',
-                )
-              })
-            }}
             onUpdate={() => {
               if (updateInfo?.available) void doUpdate()
               else if (desktopRelease) setDesktopUpdate(desktopRelease)
@@ -5510,7 +5518,7 @@ const HomePage = () => {
                       onClick={() => updateCurrentSubscription()}
                       sx={{ flex: '1 1 116px' }}
                     >
-                      更新订阅
+                      {subscriptionRefreshing ? '更新中…' : '更新订阅'}
                     </Button>
                     <Button
                       variant="outlined"

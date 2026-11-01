@@ -35,8 +35,10 @@ impl Config {
         static CONFIG: OnceCell<Config> = OnceCell::const_new();
         CONFIG
             .get_or_init(|| async {
+                let mut clash = IClashTemp::new().await;
+                super::startup_mode::reset_for_app_start(&mut clash.0);
                 Self {
-                    clash_config: Draft::new(IClashTemp::new().await),
+                    clash_config: Draft::new(clash),
                     verge_config: Draft::new(IVerge::new().await),
                     profiles_config: Draft::new(IProfiles::new().await),
                     runtime_config: Draft::new(IRuntime::new()),
