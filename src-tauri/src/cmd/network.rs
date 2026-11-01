@@ -179,3 +179,8 @@ pub fn get_network_interfaces_info() -> CmdResult<Vec<NetworkInterface>> {
 pub fn is_port_in_use(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_err()
 }
+
+#[tauri::command]
+pub fn management_proxy_url() -> CmdResult<std::string::String> {
+    crate::enhance::management::proxy_url().map_err(Into::into)
+}

@@ -2,6 +2,7 @@ mod automatic;
 mod chain;
 mod editor_rules;
 pub mod field;
+pub mod management;
 mod merge;
 mod official_dns;
 mod script;
@@ -658,6 +659,7 @@ pub async fn enhance() -> Result<(Mapping, HashSet<String>, HashMap<String, Resu
     // dns settings
     config = apply_dns_settings(config, enable_dns_settings).await;
 
+    management::apply(&mut config).map_err(anyhow::Error::msg)?;
     official_dns::apply(&mut config).map_err(anyhow::Error::msg)?;
     editor_rules::apply(&mut config, &editor_rules).map_err(anyhow::Error::msg)?;
 

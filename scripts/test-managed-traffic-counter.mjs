@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+
 import {
   acknowledgeManagedTraffic,
   createManagedTrafficCounter,
@@ -57,4 +58,25 @@ describe('managed traffic counter', () => {
       true,
     )
   })
+})
+
+it('persists a frozen relay packet through newer samples and restart', () => {
+  let counter = createManagedTrafficCounter(
+    'code',
+    { upload: 0, download: 0 },
+    'frozen',
+  )
+  counter = observeManagedTraffic(counter, { upload: 10, download: 20 }).counter
+  const frozen = { ...managedTrafficPayload(counter), observed_at: 1234 }
+  counter = { ...counter, pending: frozen }
+  counter = observeManagedTraffic(counter, {
+    upload: 100,
+    download: 200,
+  }).counter
+  const restored = parseManagedTrafficCounter(JSON.stringify(counter), 'code')
+  assert.deepEqual(managedTrafficPayload(restored), frozen)
+  const next = acknowledgeManagedTraffic(restored, frozen.sequence)
+  assert.equal(next.pending, undefined)
+  assert.equal(managedTrafficPayload(next).sequence, 2)
+  assert.equal(managedTrafficPayload(next).upload_total, 100)
 })

@@ -6,6 +6,7 @@ export type ManagedTrafficCounter = {
   counterId: string
   sequence: number
   base: TrafficTotals
+  pending?: ManagedTrafficPacket
   observed: TrafficTotals
 }
 
@@ -36,20 +37,31 @@ export const observeManagedTraffic = (
   return { counter: { ...counter, observed: totals }, reset: false }
 }
 
-export const managedTrafficPayload = (counter: ManagedTrafficCounter) => ({
-  counter_id: counter.counterId,
-  sequence: counter.sequence + 1,
-  upload_total: Math.max(0, counter.observed.upload - counter.base.upload),
-  download_total: Math.max(
-    0,
-    counter.observed.download - counter.base.download,
-  ),
-})
+export type ManagedTrafficPacket = {
+  counter_id: string
+  sequence: number
+  upload_total: number
+  download_total: number
+  observed_at?: number
+}
+
+export const managedTrafficPayload = (
+  counter: ManagedTrafficCounter,
+): ManagedTrafficPacket =>
+  counter.pending || {
+    counter_id: counter.counterId,
+    sequence: counter.sequence + 1,
+    upload_total: Math.max(0, counter.observed.upload - counter.base.upload),
+    download_total: Math.max(
+      0,
+      counter.observed.download - counter.base.download,
+    ),
+  }
 
 export const acknowledgeManagedTraffic = (
   counter: ManagedTrafficCounter,
   sequence: number,
-): ManagedTrafficCounter => ({ ...counter, sequence })
+): ManagedTrafficCounter => ({ ...counter, sequence, pending: undefined })
 
 export const parseManagedTrafficCounter = (
   raw: string | null,
@@ -73,6 +85,19 @@ export const parseManagedTrafficCounter = (
       !validTotals(value.observed)
     ) {
       return null
+    }
+    if (value.pending) {
+      const p = value.pending
+      if (
+        p.counter_id !== value.counterId ||
+        p.sequence !== Number(value.sequence) + 1 ||
+        !Number.isSafeInteger(p.upload_total) ||
+        !Number.isSafeInteger(p.download_total) ||
+        p.upload_total < 0 ||
+        p.download_total < 0 ||
+        !Number.isSafeInteger(p.observed_at)
+      )
+        return null
     }
     return value as ManagedTrafficCounter
   } catch {

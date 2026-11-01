@@ -115,6 +115,7 @@ import {
 } from '@/services/desktop-proxy-traffic'
 import {
   fetchWithVerifiedTls,
+  getManagementProxy,
   getApiBase,
   getBootstrapProxy,
   getRuntimeBrand,
@@ -131,6 +132,12 @@ import {
   withRequestDeadline,
 } from '@/services/http-request-deadline'
 import { loadManagedContent } from '@/services/managed-download-recovery'
+import {
+  fetchSubscriptionWithRelay,
+  prepareRelay,
+  sendTrafficWithRelay,
+  relayEndpoint,
+} from '@/services/managed-relay'
 import {
   clearManagedAuth,
   extractTicketFromLaunchUrl,
@@ -1224,11 +1231,54 @@ const HomePage = () => {
           const guarded = { ...init, signal }
           const fetchPath = (options: Parameters<typeof tauriFetch>[1]) =>
             fetchBufferedWithDeadline(fetchWithVerifiedTls, url, options)
+          if (isDomesticApiUrl(url) && proxyUrlRef.current) {
+            try {
+              const directProxy = await getManagementProxy()
+              return await fetchPath({
+                ...guarded,
+                connectTimeout: 2000,
+                proxy: { all: directProxy },
+              })
+            } catch (directError) {
+              if (signal.aborted) throw directError
+            }
+          }
           try {
             return await fetchPath(guarded)
           } catch (err) {
             if (signal.aborted) throw err
+            try {
+              const directProxy = await getManagementProxy()
+              return await fetchPath({
+                ...guarded,
+                connectTimeout: 2000,
+                proxy: { all: directProxy },
+              })
+            } catch (directError) {
+              if (signal.aborted) throw directError
+            }
             // 国内主域名必须直连；失败后由上层自动换线路，不允许绕代理重试。
+            const operation = new URL(url).pathname.match(
+              /^\/api\/v2\/client\/(heartbeat|offline|relay)$/,
+            )?.[1]
+            if (operation) {
+              return await fetchBufferedWithDeadline(
+                fetchWithVerifiedTls,
+                relayEndpoint(operation === 'relay' ? 'authorize' : operation),
+                {
+                  ...guarded,
+                  method: 'POST',
+                  connectTimeout: 2500,
+                  headers: {
+                    ...Object.fromEntries(
+                      new Headers(guarded.headers).entries(),
+                    ),
+                    'Content-Type': 'application/json',
+                  },
+                  body: operation === 'relay' ? '{}' : guarded.body,
+                },
+              )
+            }
             if (isDomesticApiUrl(url)) throw err
             // 第 2 层：内核混合端口（在跑时）或系统代理
             const p = proxyUrlRef.current
@@ -1261,12 +1311,22 @@ const HomePage = () => {
   )
 
   const persistManagedAuth = useCallback(async (auth: ManagedAuth | null) => {
+    let resolved = auth
     if (auth) {
-      await saveManagedAuth(auth)
+      const previous = await loadManagedAuth().catch(() => null)
+      resolved = {
+        ...auth,
+        relay:
+          auth.relay ||
+          (previous?.deviceToken === auth.deviceToken
+            ? previous.relay
+            : undefined),
+      }
+      await saveManagedAuth(resolved)
     } else {
       await clearManagedAuth()
     }
-    managedAuthRef.current = auth
+    managedAuthRef.current = resolved
   }, [])
 
   const syncExpiresAt = useCallback(
@@ -1363,17 +1423,21 @@ const HomePage = () => {
       auth: Pick<ManagedAuth, 'subscriptionUrl' | 'deviceToken'>,
       signal?: AbortSignal,
     ) => {
-      const response = await apiFetch(auth.subscriptionUrl, {
-        method: 'GET',
-        connectTimeout: 12000,
-        signal,
-        headers: {
-          Authorization: `Bearer ${auth.deviceToken}`,
-          'User-Agent': CLIENT_UA,
-          'X-Client-Id': getClientId(),
-          'X-Client-Type': CLIENT_TYPE,
+      const response = await fetchSubscriptionWithRelay(
+        auth,
+        {
+          method: 'GET',
+          connectTimeout: 12000,
+          signal,
+          headers: {
+            Authorization: `Bearer ${auth.deviceToken}`,
+            'User-Agent': CLIENT_UA,
+            'X-Client-Id': getClientId(),
+            'X-Client-Type': CLIENT_TYPE,
+          },
         },
-      })
+        apiFetch,
+      )
       if (!response.ok) {
         const message = await response.text().catch(() => '')
         throw new AccessCodeStateError(
@@ -1596,6 +1660,7 @@ const HomePage = () => {
           managedAuthRef.current = auth
         }
         if (!auth) return
+        void prepareRelay(auth, apiFetch).catch(() => undefined)
         void (async () => {
           const profileName = managedProfileName(getRuntimeBrand().client_name)
           const list = await getProfiles()
@@ -1615,7 +1680,7 @@ const HomePage = () => {
         }
       })
       .finally(() => setManagedAuthReady(true))
-  }, [mutateProfiles])
+  }, [mutateProfiles, apiFetch])
 
   const verifyCode = useCallback(
     async (input: string, countImport = true): Promise<ValidVerifyResponse> => {
@@ -2160,16 +2225,32 @@ const HomePage = () => {
           MANAGED_TRAFFIC_STORAGE_KEY,
           JSON.stringify(counter),
         )
-        const pending =
-          pendingManagedTrafficRef.current || managedTrafficPayload(counter)
+        const pending = pendingManagedTrafficRef.current ||
+          counter.pending || {
+            ...managedTrafficPayload(counter),
+            observed_at: Math.floor(Date.now() / 1000),
+          }
         if (pending.upload_total <= 0 && pending.download_total <= 0) {
           return { status: 'no_delta' }
         }
         pendingManagedTrafficRef.current = pending
+        counter = { ...counter, pending }
+        trafficCounterRef.current = counter
+        localStorage.setItem(
+          MANAGED_TRAFFIC_STORAGE_KEY,
+          JSON.stringify(counter),
+        )
 
         trafficReportRetryAfterRef.current = 0
-        const response = await apiFetch(
-          `${auth.apiBase}/api/v2/client/traffic`,
+        const response = await sendTrafficWithRelay(
+          auth,
+          JSON.stringify({
+            ...pending,
+            platform: CLIENT_PLATFORM_LABEL,
+            app_name: `${getRuntimeBrand().client_name}桌面端`,
+            app_version: DESKTOP_VERSION,
+            device_name: navigator.userAgent,
+          }),
           {
             method: 'POST',
             connectTimeout: 5000,
@@ -2189,6 +2270,7 @@ const HomePage = () => {
               device_name: navigator.userAgent,
             }),
           },
+          apiFetch,
         )
         const data = (await response.json().catch((error) => {
           if (signal.aborted) throw error
@@ -2248,7 +2330,7 @@ const HomePage = () => {
           MANAGED_TRAFFIC_STORAGE_KEY,
           JSON.stringify(acknowledged),
         )
-        if (data) {
+        if (data?.day_used !== undefined) {
           setClientAccountState((previous) => ({
             dayUsed: Number(data.day_used) || 0,
             monthUsed: Number(data.month_used) || 0,

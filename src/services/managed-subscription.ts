@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
+import type { RelayGrant } from './managed-relay'
+
 export type ManagedImportRequest = {
   ticket: string
   apiBase: string
@@ -16,6 +18,7 @@ export type ManagedAuth = {
   limitMode: string
   contentHash: string
   detached: boolean
+  relay?: RelayGrant
   updateVersion: number
 }
 

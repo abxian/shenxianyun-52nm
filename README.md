@@ -239,3 +239,10 @@ GPL-3.0 License. See [License here](./LICENSE) for details.
 打开软件刷新受管订阅、规则编辑和完整官网块后的排序、续费/迁移恢复、隐藏技术错误弹层、切码等待 owned 核心退出及 Windows 下载取消/超时恢复在源码中。Mac 仍打开本站 GitHub Release 页面，Linux 更新入口保持原有行为。原数据与未确认累计不清理；旧全流量缓存不迁入新代理计数命名空间。用户切码/停止需确认旧核退出后再替换配置。
 
 构建门禁包括 branded profile/独立线路断言、Rust Clippy、规则与生命周期纯模块、TS 操作状态机、真实核心直连排除/短连接保留测试；质量构建、正式发布、分发和真实设备验收分别记载。尚未通过云端构建与签名验包时，不应把版本候选当成已发布。
+
+
+### 2026-11-01 管理请求退路（task317）
+
+规则模式保留国内官网优先，失败才使用固定租户ll.sxnn.de通道；两种模式继续受控主动上报。`src/services/managed-relay.ts`缓存短期grant到原加密managed-auth，不存原token到公开队列。counter的冻结pending/observed_at与累计值一起持久化，202不清pending，仅主站事务成功或relay最终applied清除；同counter/seq不重复计量。订阅实时鉴权请求固定上游，不缓存旧配置，401/403不绕过授权重试。
+
+`src-tauri/src/enhance/management.rs`生成仅127.0.0.1随机端口的mixed入站，`proxy:DIRECT`在Mihomo特殊入站优先级下先于global选择；官网管理请求可经此入口避免TUN全球出口影响，不修改用户mode/选中节点/正常业务规则。端口同进程稳定、随核心配置重新生成，未运行核心时仍尝试原站直连。纯本机隔离真实Mihomo测试：GLOBAL=REJECT时普通mixed失败、管理入站HTTP200。客户端云构建/发布与真机验收另行记录，版本号和正式分发本轮不改。

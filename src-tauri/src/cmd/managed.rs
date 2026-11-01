@@ -32,6 +32,8 @@ pub struct ManagedAuth {
     pub content_hash: String,
     pub detached: bool,
     pub update_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<serde_json::Value>,
 }
 
 static PENDING_MANAGED_IMPORT: Lazy<Mutex<Option<ManagedImportRequest>>> = Lazy::new(|| Mutex::new(None));
