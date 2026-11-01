@@ -246,3 +246,8 @@ GPL-3.0 License. See [License here](./LICENSE) for details.
 规则模式保留国内官网优先，失败才使用固定租户ll.sxnn.de通道；两种模式继续受控主动上报。`src/services/managed-relay.ts`缓存短期grant到原加密managed-auth，不存原token到公开队列。counter的冻结pending/observed_at与累计值一起持久化，202不清pending，仅主站事务成功或relay最终applied清除；同counter/seq不重复计量。订阅实时鉴权请求固定上游，不缓存旧配置，401/403不绕过授权重试。
 
 `src-tauri/src/enhance/management.rs`生成仅127.0.0.1随机端口的mixed入站，`proxy:DIRECT`在Mihomo特殊入站优先级下先于global选择；官网管理请求可经此入口避免TUN全球出口影响，不修改用户mode/选中节点/正常业务规则。端口同进程稳定、随核心配置重新生成，未运行核心时仍尝试原站直连。纯本机隔离真实Mihomo测试：GLOBAL=REJECT时普通mixed失败、管理入站HTTP200。客户端云构建/发布与真机验收另行记录，版本号和正式分发本轮不改。
+
+
+## 2026-11-01 同一服务的首次提取码导入入口（317补充）
+
+双品牌提取码验证/订阅状态/一次性票据申请和设备交换通过同一ll.sxnn.de固定tenant入口，国内DIRECT仍优先、失败备用；不增加新服务器，不共享客户数据库/密钥。relay1.2固定允许verify/state/ticket/exchange的POST正文和官方target，不需要尚不存在的设备token；原主站继续校验提取码/有效期/设备数/一次性票据和既有限速，不缓存凭据或节点。POST /api/v2/client/{verify,state}分别复用原校验/版本状态语义，避免国外入口路径带明文提取码。消费者与上报最终ACK仍按前阶段原实现。交换410/401/403等业务拒绝不自动走备用再消费；网络超时的不确定结果不假称成功，保留原配置。客户端仅验证分支编译，未改正式版本或分发，等用户通知云构建完成后再查准确新source。

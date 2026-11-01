@@ -134,6 +134,7 @@ import {
 import { loadManagedContent } from '@/services/managed-download-recovery'
 import {
   fetchSubscriptionWithRelay,
+  fetchEntryWithRelay,
   prepareRelay,
   sendTrafficWithRelay,
   relayEndpoint,
@@ -1352,17 +1353,21 @@ const HomePage = () => {
 
   const requestImportTicket = useCallback(
     async (input: string, apiBase = getApiBase()) => {
-      const response = await apiFetch(`${apiBase}/api/import/ticket`, {
-        method: 'POST',
-        connectTimeout: 8000,
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': CLIENT_UA,
-          'X-Client-Id': getClientId(),
-          'X-Client-Type': CLIENT_TYPE,
+      const response = await fetchEntryWithRelay(
+        `${apiBase}/api/import/ticket`,
+        {
+          method: 'POST',
+          connectTimeout: 8000,
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': CLIENT_UA,
+            'X-Client-Id': getClientId(),
+            'X-Client-Type': CLIENT_TYPE,
+          },
+          body: JSON.stringify({ code: input, target: 'shenxianyun' }),
         },
-        body: JSON.stringify({ code: input, target: 'shenxianyun' }),
-      })
+        apiFetch,
+      )
       const data = (await response.json()) as ImportTicketResponse
       const ticket = extractTicketFromLaunchUrl(data.launch_url || '')
       if (!response.ok || !data.ok || !ticket) {
@@ -1379,7 +1384,7 @@ const HomePage = () => {
   const exchangeImportTicket = useCallback(
     async (request: ManagedImportRequest) => {
       const deviceKey = await getStableDeviceKey().catch(() => null)
-      const response = await apiFetch(
+      const response = await fetchEntryWithRelay(
         `${request.apiBase}/api/import/exchange`,
         {
           method: 'POST',
@@ -1397,6 +1402,7 @@ const HomePage = () => {
             platform: DESKTOP_PLATFORM,
           }),
         },
+        apiFetch,
       )
       const data = (await response.json()) as ImportExchangeResponse
       if (
@@ -1691,7 +1697,7 @@ const HomePage = () => {
         client_id: getClientId(),
       })
       if (countImport) params.set('import', '1')
-      const response = await apiFetch(
+      const response = await fetchEntryWithRelay(
         `${getApiBase()}/api/verify/${encodeURIComponent(input)}?${params.toString()}`,
         {
           method: 'GET',
@@ -1702,6 +1708,7 @@ const HomePage = () => {
             'X-Client-Type': CLIENT_TYPE,
           },
         },
+        apiFetch,
       )
       const data = (await response.json()) as VerifyResponse
       if (!response.ok || !data.ok || !data.subscription_url) {
@@ -1720,7 +1727,7 @@ const HomePage = () => {
       const params = new URLSearchParams({
         client_id: getClientId(),
       })
-      const response = await apiFetch(
+      const response = await fetchEntryWithRelay(
         `${getApiBase()}/api/update-state/${encodeURIComponent(input)}?${params.toString()}`,
         {
           method: 'GET',
@@ -1732,6 +1739,7 @@ const HomePage = () => {
             'X-Client-Type': CLIENT_TYPE,
           },
         },
+        apiFetch,
       )
       const data = (await response.json()) as UpdateStateResponse
       if (!response.ok || !data.ok) {

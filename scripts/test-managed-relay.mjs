@@ -128,3 +128,67 @@ test('subscription revoked credentials do not use fallback', async () => {
   assert.equal(r.status, 403)
   assert.equal(count, 1)
 })
+
+test('first import and state fallback use one fixed tenant service with POST code body', async () => {
+  for (const [path, init, operation] of [
+    [
+      '/api/import/ticket',
+      {
+        method: 'POST',
+        body: JSON.stringify({ code: 'synthetic', target: 'shenxianyun' }),
+      },
+      'ticket',
+    ],
+    [
+      '/api/import/exchange',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ticket: 'one-use', client_id: 'device' }),
+      },
+      'exchange',
+    ],
+    ['/api/verify/synthetic?client_id=device', { method: 'GET' }, 'verify'],
+    [
+      '/api/update-state/synthetic?client_id=device',
+      { method: 'GET' },
+      'state',
+    ],
+  ]) {
+    const calls = []
+    const r = await mod.fetchEntryWithRelay(
+      'https://api.example.test' + path,
+      init,
+      async (url, options) => {
+        calls.push([url, options])
+        if (url.startsWith('https://api.example.test'))
+          throw new Error('offline')
+        return reply(200, { ok: true })
+      },
+    )
+    assert.equal(r.status, 200)
+    assert.equal(
+      calls[1][0],
+      `https://ll.sxnn.de/v1/client/${tenant}/${operation}`,
+    )
+    assert.equal(calls[1][1].method, 'POST')
+    assert.equal(calls[1][0].includes('synthetic'), false)
+  }
+})
+test('one-use exchange denial is never replayed into fallback and arbitrary paths rejected', async () => {
+  let count = 0
+  const r = await mod.fetchEntryWithRelay(
+    'https://api.example.test/api/import/exchange',
+    { method: 'POST', body: '{}' },
+    async () => {
+      count++
+      return reply(410, { ok: false })
+    },
+  )
+  assert.equal(r.status, 410)
+  assert.equal(count, 1)
+  await assert.rejects(() =>
+    mod.fetchEntryWithRelay('https://api.example.test/admin', {}, async () =>
+      reply(200, {}),
+    ),
+  )
+})

@@ -197,3 +197,49 @@ export const fetchSubscriptionWithRelay = async (
     headers: { 'Cache-Control': 'no-store' },
   })
 }
+
+/** First import has no device token yet. Only these fixed entry operations can
+ * reach the shared relay; authority/one-use tickets stay in the original Web. */
+export const fetchEntryWithRelay = async (
+  url: string,
+  init: Parameters<typeof tauriFetch>[1],
+  fetcher: RelayFetch,
+): Promise<Response> => {
+  const parsed = new URL(url)
+  let operation: 'ticket' | 'exchange' | 'verify' | 'state'
+  let body: Record<string, unknown>
+  if (
+    parsed.pathname === '/api/import/ticket' ||
+    parsed.pathname === '/api/import/exchange'
+  ) {
+    operation = parsed.pathname.endsWith('/ticket') ? 'ticket' : 'exchange'
+    body = JSON.parse(
+      typeof init?.body === 'string' ? init.body : '{}',
+    ) as Record<string, unknown>
+  } else {
+    const match = parsed.pathname.match(
+      /^\/api\/(verify|update-state)\/([^/]+)$/,
+    )
+    if (!match) throw new Error('unsupported official entry operation')
+    operation = match[1] === 'verify' ? 'verify' : 'state'
+    body = {
+      code: decodeURIComponent(match[2]),
+      client_id: parsed.searchParams.get('client_id') || '',
+    }
+    if (parsed.searchParams.has('import'))
+      body.import = parsed.searchParams.get('import')
+  }
+  try {
+    const response = await within(fetcher, url, init)
+    if (response.status < 500) return response
+  } catch (error) {
+    if (init?.signal?.aborted) throw error
+  }
+  return within(fetcher, relayEndpoint(operation), {
+    method: 'POST',
+    connectTimeout: 2500,
+    signal: init?.signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
