@@ -1231,7 +1231,10 @@ const HomePage = () => {
           const guarded = { ...init, signal }
           const fetchPath = (options: Parameters<typeof tauriFetch>[1]) =>
             fetchBufferedWithDeadline(fetchWithVerifiedTls, url, options)
-          if (isDomesticApiUrl(url) && proxyUrlRef.current) {
+          if (
+            (isDomesticApiUrl(url) || new URL(url).hostname === 'll.sxnn.de') &&
+            proxyUrlRef.current
+          ) {
             try {
               const directProxy = await getManagementProxy()
               return await fetchPath({
