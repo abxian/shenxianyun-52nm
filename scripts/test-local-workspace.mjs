@@ -99,7 +99,13 @@ test('reserved command is exact, ordinary codes and URLs stay ordinary', () => {
     accountExpiryLabel('2030-02-03 12:00:00'),
     '到期时间：2030-02-03 12:00:00',
   )
-  assert.equal(accountExpiryLabel(''), '到期时间：待同步')
+  for (const absent of ['', '  ', 'null', ' NULL ']) {
+    assert.equal(accountExpiryLabel(absent), '')
+  }
+  assert.equal(
+    accountExpiryLabel('2020-02-03T12:00:00'),
+    '到期时间：2020-02-03 12:00:00',
+  )
 })
 function filePorts() {
   const events = [],

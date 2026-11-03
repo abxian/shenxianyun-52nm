@@ -1166,6 +1166,7 @@ const HomePage = () => {
     savedCode && code.trim() && code.trim() !== savedCode,
   )
   const codeExpired = Boolean(expiresAt && nowMs > parseExpireTime(expiresAt))
+  const expiryLabel = accountExpiryLabel(expiresAt)
   const activeRestriction =
     accessRestriction?.accessCode === currentCode ? accessRestriction : null
   const showRenewal = Boolean(
@@ -5084,7 +5085,7 @@ const HomePage = () => {
               </Button>
             </Stack>
           )}
-          {currentCode && (
+          {currentCode && expiryLabel && (
             <Typography
               role="status"
               sx={{
@@ -5093,7 +5094,7 @@ const HomePage = () => {
                 px: 1,
               }}
             >
-              {accountExpiryLabel(expiresAt)}
+              {expiryLabel}
             </Typography>
           )}
           {!showConnectionOptions ? (
@@ -5641,10 +5642,8 @@ const HomePage = () => {
                   </Box>
                 )}
 
-                {currentCode && (
-                  <Typography sx={{ fontSize: 13 }}>
-                    {accountExpiryLabel(expiresAt)}
-                  </Typography>
+                {currentCode && expiryLabel && (
+                  <Typography sx={{ fontSize: 13 }}>{expiryLabel}</Typography>
                 )}
                 {currentCode && clientAccountState?.showUsage && (
                   <Paper

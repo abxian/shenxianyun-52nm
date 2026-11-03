@@ -8,8 +8,10 @@ export const homeWorkspaceVisible = (
   connectionReady: boolean,
 ) => localWorkspace || (running && connectionReady)
 
-/** Keep dates readable without pretending an absent expiry is unlimited. */
+/** Show an expiry only when the account provides a date. */
 export const accountExpiryLabel = (value: string) => {
   const date = value.trim()
-  return date ? `到期时间：${date.replace('T', ' ')}` : '到期时间：待同步'
+  return date && date.toLowerCase() !== 'null'
+    ? `到期时间：${date.replace('T', ' ')}`
+    : ''
 }
