@@ -8,6 +8,7 @@
   "allowedBranches": [
     "codex/commercial-canary-20260824",
     "codex/relay-management-20261101",
+    "codex/expiry-test-20261103",
     "main"
   ],
   "requiredAncestor": "7e0973aa04d9c3c64a21e6804dccd21427fde5d2",
