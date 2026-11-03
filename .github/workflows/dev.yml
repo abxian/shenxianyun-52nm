@@ -3,6 +3,11 @@ name: Development Test
 on:
   workflow_dispatch:
     inputs:
+      publish_test:
+        description: '全部选定平台通过后发布独立测试版本（不更新正式渠道）'
+        required: false
+        type: boolean
+        default: false
       run_windows:
         description: '运行 Windows'
         required: false
@@ -222,3 +227,46 @@ jobs:
           archive: false
           path: target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
+
+  publish_test:
+    name: Publish isolated expiry test
+    needs: dev
+    if: inputs.publish_test && needs.dev.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download this run's test packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: test-packages
+          merge-multiple: true
+      - name: Record source and package hashes
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib,json,os,hashlib
+          root=pathlib.Path('test-packages')
+          files=sorted(p for p in root.rglob('*') if p.is_file())
+          assert len(files) >= 4 and {p.suffix for p in files} == {'.exe','.dmg','.deb'}
+          lines=[hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(root)) for p in files]
+          (root/'SHA256SUMS').write_text('\n'.join(lines)+'\n')
+          (root/'source.json').write_text(json.dumps({'repository':os.environ['SOURCE_REPO'],'sha':os.environ['SOURCE_SHA'],'run':os.environ['RUN_URL'],'channel':'test','formal_distribution_changed':False},indent=2))
+          PYCODE
+      - name: Publish test only
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: test-expiry-20261103
+          target_commitish: ${{ github.sha }}
+          name: 到期时间显示修复 · PC 测试版 · 2026-11-03
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: test-packages/**/*
+          body: |
+            未设置到期时间的提取码隐藏到期标签；有日期及真实限制保持原样。
+            Windows x64/ARM64、macOS Apple Silicon、Linux x64 测试包。
+            构建来源 ${{ github.sha }}。正式版本更新入口不变；请手动下载测试。
