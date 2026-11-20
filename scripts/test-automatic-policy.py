@@ -105,6 +105,20 @@ def main():
             if package.get('source'):
                 assert (package['name'], package['version'], package.get('checksum')) in locked
         fixture_program = harness / 'target/debug/fixture'
+        # Use documentation addresses so the production policy generates all
+        # three choices. Syntax validation does not start the fixture network.
+        policy_input = work / 'pinned.json'
+        policy_input.write_text(json.dumps({
+            'proxies': [
+                {'name': name, 'type': 'socks5', 'server': host, 'port': 1080}
+                for name, host in [('A', '192.0.2.1'), ('B', '192.0.2.2')]
+            ],
+            'proxy-groups': [{'name': '节点选择', 'type': 'select', 'proxies': ['A', 'B']}],
+            'rules': ['MATCH,节点选择'],
+        }, ensure_ascii=False))
+        policy_yaml = work / 'pinned.yaml'
+        policy_yaml.write_bytes(run(str(fixture_program), str(policy_input)))
+        run(str(args.core.resolve()), '-t', '-d', str(work), '-f', str(policy_yaml))
         servers = [FakeSocks(('127.0.0.1', 0), Handler) for _ in range(2)]
         core = None
         try:

@@ -44,6 +44,22 @@ test('multiple automatic policies keep their original order and manual latency s
   )
 })
 
+test('load balance and failover are pinned after automatic selection', () => {
+  const nodes = [
+    { name: '故障转移', type: 'Fallback', delay: 1 },
+    { name: '手动节点', type: 'Shadowsocks', delay: 0 },
+    { name: '轮询负载均衡', type: 'LoadBalance', delay: 0 },
+    { name: '负载均衡', type: 'LoadBalance', delay: 9999 },
+    { name: '自动选择', type: 'URLTest', delay: 9999 },
+  ]
+  assert.deepEqual(
+    sortHomeNodes(nodes, (node) => node.delay).map((node) => node.name),
+    ['自动选择', '负载均衡', '轮询负载均衡', '故障转移', '手动节点'],
+  )
+  assert.equal(isAutomaticNode({ name: '负载均衡', type: 'Selector' }), false)
+  assert.equal(isAutomaticNode({ name: '故障转移', type: 'Fallback' }), true)
+})
+
 test('home suppresses routine progress but keeps actionable and unfamiliar errors', () => {
   for (const status of [
     '正在刷新订阅...',

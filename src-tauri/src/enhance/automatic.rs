@@ -25,6 +25,100 @@ fn tune_health(group: &mut Mapping) {
     }
 }
 
+fn pin_routing_choices(config: &Mapping, groups: &mut Vec<Value>, automatic: &str, primary: usize) {
+    let Some(members) = groups[primary].get("proxies").and_then(Value::as_sequence) else {
+        return;
+    };
+    let mut members = members.clone();
+    let dedicated: HashSet<_> = groups
+        .iter()
+        .filter_map(Value::as_mapping)
+        .filter(|group| {
+            text(group, "name")
+                .trim_end_matches(|c: char| c.is_ascii_digit())
+                .ends_with("最终选择")
+        })
+        .filter_map(|group| group.get("proxies").and_then(Value::as_sequence))
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let leaves: HashSet<_> = config
+        .get("proxies")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_mapping)
+        .filter_map(|proxy| {
+            let name = text(proxy, "name");
+            let host = text(proxy, "server");
+            let eligible = !host.is_empty()
+                && host != "localhost"
+                && !host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+                && !matches!(text(proxy, "type"), "" | "direct" | "reject" | "dns")
+                && !proxy.contains_key("dialer-proxy")
+                && !dedicated.contains(name)
+                && !name.is_empty()
+                && !["专线", "客服", "公告", "倒卖", "到期", "剩余流量", "续费"]
+                    .iter()
+                    .any(|term| name.contains(term))
+                && !matches!(name, "神仙云" | "吾爱云");
+            eligible.then_some(name)
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let candidates: Vec<_> = members
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| leaves.contains(name) && seen.insert(*name))
+        .map(Value::from)
+        .collect();
+    let mut pinned = Vec::new();
+    for (name, kind, strategy) in [
+        ("负载均衡", "load-balance", Some("consistent-hashing")),
+        ("轮询负载均衡", "load-balance", Some("round-robin")),
+        ("故障转移", "fallback", None),
+    ] {
+        let existing = groups
+            .iter()
+            .filter_map(Value::as_mapping)
+            .find(|g| text(g, "name") == name);
+        if let Some(group) = existing {
+            if text(group, "type") == kind && members.iter().any(|m| m.as_str() == Some(name)) {
+                pinned.push(Value::from(name));
+            }
+            continue;
+        }
+        let node_collision = config
+            .get("proxies")
+            .and_then(Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_mapping)
+            .any(|node| text(node, "name") == name);
+        if candidates.len() < 2 || node_collision {
+            continue;
+        }
+        let mut group = Mapping::new();
+        group.insert("name".into(), name.into());
+        group.insert("type".into(), kind.into());
+        group.insert("proxies".into(), Value::Sequence(candidates.clone()));
+        tune_health(&mut group);
+        group.insert("lazy".into(), true.into());
+        if let Some(strategy) = strategy {
+            group.insert("strategy".into(), strategy.into());
+        }
+        groups.push(Value::Mapping(group));
+        pinned.push(Value::from(name));
+    }
+    members.retain(|item| !pinned.contains(item));
+    if let Some(position) = members.iter().position(|m| m.as_str() == Some(automatic)) {
+        members.splice(position + 1..position + 1, pinned);
+        groups[primary]["proxies"] = Value::Sequence(members);
+    }
+}
+
 /// Runtime-only policy: never edits a subscription or the user's saved choice.
 /// Keep automatic groups warm even when a manual node is currently selected.
 pub fn ensure_automatic_selection(config: &mut Mapping) {
@@ -165,6 +259,17 @@ pub fn ensure_automatic_selection(config: &mut Mapping) {
             }
         }
     }
+    if let Some(primary) = groups.iter().position(|entry| {
+        entry.as_mapping().is_some_and(|selector| {
+            primary_selector(selector)
+                && selector
+                    .get("proxies")
+                    .and_then(Value::as_sequence)
+                    .is_some_and(|members| members.iter().any(|member| member.as_str() == Some(&name)))
+        })
+    }) {
+        pin_routing_choices(config, &mut groups, &name, primary);
+    }
     config.insert("proxy-groups".into(), Value::Sequence(groups));
 }
 
@@ -186,6 +291,13 @@ mod tests {
         ensure_automatic_selection(&mut config);
         let groups = config["proxy-groups"].as_sequence().expect("groups");
         assert_eq!(groups[0]["proxies"][0].as_str(), Some("自动选择"));
+        assert_eq!(
+            groups[0]["proxies"].as_sequence().expect("members"),
+            &["自动选择", "负载均衡", "轮询负载均衡", "故障转移", "A", "B"].map(Value::from)
+        );
+        assert_eq!(groups[2]["strategy"].as_str(), Some("consistent-hashing"));
+        assert_eq!(groups[3]["strategy"].as_str(), Some("round-robin"));
+        assert_eq!(groups[4]["type"].as_str(), Some("fallback"));
         assert_eq!(groups[1]["lazy"].as_bool(), Some(false));
         assert_eq!(groups[1]["interval"].as_u64(), Some(60));
         assert_eq!(groups[1]["max-failed-times"].as_u64(), Some(1));
@@ -194,6 +306,26 @@ mod tests {
         let once = config.clone();
         ensure_automatic_selection(&mut config);
         assert_eq!(once, config);
+    }
+
+    #[test]
+    fn optional_groups_exclude_dedicated_and_placeholder_nodes_and_respect_collisions() {
+        let mut config = parse(
+            "proxies: [{name: A, type: ss, server: a.test}, {name: B, type: ss, server: b.test}, {name: 独立, type: ss, server: dedicated.test}, {name: 落地中转, type: ss, server: dedicated.test, dialer-proxy: A}, {name: 客服公告, type: ss, server: notice.test}, {name: 香港专线, type: ss, server: line.test}, {name: 轮询负载均衡, type: ss, server: local.test}]\nproxy-groups: [{name: 节点选择, type: select, proxies: [A, B, 独立, 落地中转, 客服公告, 香港专线, DIRECT]}, {name: my01最终选择, type: select, proxies: [独立, 落地中转]}]",
+        );
+        ensure_automatic_selection(&mut config);
+        let groups = config["proxy-groups"].as_sequence().expect("groups");
+        for name in ["负载均衡", "故障转移"] {
+            let group = groups
+                .iter()
+                .find(|row| row["name"].as_str() == Some(name))
+                .expect("strategy");
+            assert_eq!(
+                group["proxies"].as_sequence().expect("members"),
+                &["A", "B"].map(Value::from)
+            );
+        }
+        assert!(!groups.iter().any(|row| row["name"].as_str() == Some("轮询负载均衡")));
     }
 
     #[test]
