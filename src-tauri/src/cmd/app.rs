@@ -173,12 +173,17 @@ pub async fn restart_app() -> CmdResult<()> {
 
 /// 在应用内安装指定版本：Dufs 优先，下载或校验失败后自动切换 GitHub。
 #[tauri::command]
-pub async fn install_app_update_with_fallback(app_handle: AppHandle, expected_version: String) -> CmdResult<()> {
+pub async fn install_app_update_with_fallback(
+    app_handle: AppHandle,
+    expected_version: String,
+    download_base: Option<String>,
+) -> CmdResult<()> {
     // Keep package I/O, signature verification and extraction off IPC workers.
     tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(updater::install_update_with_fallback(
             &app_handle,
             expected_version.as_str(),
+            download_base.as_deref(),
         ))
     })
     .await

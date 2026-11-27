@@ -9,7 +9,11 @@ import {
 import { DOMAIN_PROFILE } from '@/config/domain-profile'
 import { version as appVersion } from '@root/package.json'
 
-import { getManagementProxy } from './endpoint-resolver'
+import {
+  getEndpoints,
+  getManagementProxy,
+  refreshEndpoints,
+} from './endpoint-resolver'
 
 export type VersionParts = {
   main: number[]
@@ -217,7 +221,9 @@ export const downloadAndInstallWithFallback = async (
     ({ payload }) => onProgress?.(payload),
   )
   try {
+    const endpoints = (await refreshEndpoints()) ?? getEndpoints()
     await invoke<void>('install_app_update_with_fallback', {
+      downloadBase: endpoints?.download_base ?? null,
       expectedVersion,
     })
   } finally {

@@ -43,10 +43,7 @@ fn check_download_cancelled() -> Result<()> {
     Ok(())
 }
 
-const DUFS_UPDATE_ENDPOINTS: &[&str] = &[
-    "https://gh-proxy.org/https://github.com/abxian/shenxianyun-52nm/releases/download/updater/update-proxy.json",
-    "https://github.com/abxian/shenxianyun-52nm/releases/download/updater/update.json",
-];
+const DUFS_UPDATE_ENDPOINTS: &[&str] = &["https://sxy.52nm.de:5443/sxy/wuai/update.json"];
 const GITHUB_UPDATE_ENDPOINTS: &[&str] = &[
     "https://gh-proxy.org/https://github.com/abxian/shenxianyun-52nm/releases/download/updater/update-proxy.json",
     "https://github.com/abxian/shenxianyun-52nm/releases/download/updater/update.json",
@@ -132,19 +129,31 @@ fn normalize_update_version(version: &str) -> Option<&str> {
     valid.then_some(normalized)
 }
 
+fn discovered_update_endpoint(base: &str) -> Option<reqwest::Url> {
+    let mut url = reqwest::Url::parse(base).ok()?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let path = format!("{}/sxy/wuai/update.json", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    Some(url)
+}
+
 async fn download_verified_update(
     app_handle: &AppHandle,
     source: UpdateSource,
     expected_version: &str,
+    endpoint: reqwest::Url,
 ) -> Result<(Update, Vec<u8>)> {
     emit_update_progress(app_handle, source, "checking", None, None);
 
-    let endpoints = source
-        .endpoints()
-        .iter()
-        .map(|endpoint| endpoint.parse())
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let updater = app_handle.updater_builder().endpoints(endpoints)?.build()?;
+    let updater = app_handle.updater_builder().endpoints(vec![endpoint])?.build()?;
     check_download_cancelled()?;
     let update = download_watchdog::watch(
         updater.check(),
@@ -213,32 +222,49 @@ async fn download_verified_update(
 /// Download and install an exact version without opening a browser. Dufs is
 /// always attempted first; only metadata/download/signature failures switch to
 /// the GitHub updater endpoints. Installation itself is attempted exactly once.
-pub async fn install_update_with_fallback(app_handle: &AppHandle, expected_version: &str) -> Result<()> {
+pub async fn install_update_with_fallback(
+    app_handle: &AppHandle,
+    expected_version: &str,
+    download_base: Option<&str>,
+) -> Result<()> {
     let _interactive_guard = InteractiveUpdateGuard::acquire()?;
     let expected_version =
         normalize_update_version(expected_version).ok_or_else(|| anyhow!("invalid expected update version"))?;
 
-    let (update, bytes, source) = match download_verified_update(app_handle, UpdateSource::Dufs, expected_version).await
-    {
-        Ok((update, bytes)) => (update, bytes, UpdateSource::Dufs),
-        Err(dufs_error) => {
+    let mut seen = std::collections::HashSet::new();
+    let mut downloaded = None;
+    let mut failures = Vec::new();
+    for source in [UpdateSource::Dufs, UpdateSource::Github] {
+        let discovered = match source {
+            UpdateSource::Dufs => download_base.and_then(discovered_update_endpoint),
+            UpdateSource::Github => None,
+        };
+        let endpoints = discovered
+            .into_iter()
+            .chain(source.endpoints().iter().filter_map(|value| value.parse().ok()));
+        for endpoint in endpoints {
             check_download_cancelled()?;
-            logging!(
-                warn,
-                Type::System,
-                "Dufs updater failed before install, switching to GitHub: {dufs_error}"
-            );
-            emit_update_progress(app_handle, UpdateSource::Github, "fallback", None, None);
-            match download_verified_update(app_handle, UpdateSource::Github, expected_version).await {
-                Ok((update, bytes)) => (update, bytes, UpdateSource::Github),
-                Err(github_error) => {
-                    return Err(anyhow!(
-                        "Dufs and GitHub update sources are unavailable: Dufs: {dufs_error}; GitHub: {github_error}"
-                    ));
+            if !seen.insert(endpoint.clone()) {
+                continue;
+            }
+            if !failures.is_empty() {
+                emit_update_progress(app_handle, source, "fallback", None, None);
+            }
+            match download_verified_update(app_handle, source, expected_version, endpoint).await {
+                Ok((update, bytes)) => {
+                    downloaded = Some((update, bytes, source));
+                    break;
                 }
+                Err(error) => failures.push(error.to_string()),
             }
         }
-    };
+        if downloaded.is_some() {
+            break;
+        }
+    }
+    check_download_cancelled()?;
+    let (update, bytes, source) =
+        downloaded.ok_or_else(|| anyhow!("Update sources unavailable: {}", failures.join("; ")))?;
 
     if !DOWNLOAD_CONTROL.lock().install() {
         return Err(anyhow!("已取消更新下载"));
@@ -859,16 +885,21 @@ mod tests {
     fn test_update_sources_are_separated_and_ordered() {
         assert_eq!(UpdateSource::Dufs.endpoints(), DUFS_UPDATE_ENDPOINTS);
         assert_eq!(UpdateSource::Github.endpoints(), GITHUB_UPDATE_ENDPOINTS);
-        assert!(
-            DUFS_UPDATE_ENDPOINTS
-                .iter()
-                .all(|url| url.contains("abxian/shenxianyun-52nm/"))
-        );
+        assert!(DUFS_UPDATE_ENDPOINTS.iter().all(|url| !url.contains("github.com")));
         assert!(GITHUB_UPDATE_ENDPOINTS.iter().all(|url| url.contains("github.com")));
-        assert!(
-            DUFS_UPDATE_ENDPOINTS[0].starts_with("https://gh-proxy.org/https://github.com/abxian/shenxianyun-52nm/")
-        );
         assert!(GITHUB_UPDATE_ENDPOINTS[1].starts_with("https://github.com/abxian/shenxianyun-52nm/"));
+    }
+
+    #[test]
+    fn discovered_mirror_requires_https_and_preserves_its_path() {
+        assert_eq!(
+            discovered_update_endpoint("https://new.example.net:5443/packages/")
+                .unwrap()
+                .as_str(),
+            "https://new.example.net:5443/packages/sxy/wuai/update.json"
+        );
+        assert!(discovered_update_endpoint("http://new.example.net").is_none());
+        assert!(discovered_update_endpoint("https://user@new.example.net").is_none());
     }
 
     #[test]
