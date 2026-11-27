@@ -72,11 +72,7 @@ import { ClashPortViewer } from '@/components/setting/mods/clash-port-viewer'
 import { ControllerViewer } from '@/components/setting/mods/controller-viewer'
 import { TunnelsViewer } from '@/components/setting/mods/tunnels-viewer'
 import { WebUIViewer } from '@/components/setting/mods/web-ui-viewer'
-import {
-  DOMAIN_PROFILE,
-  DOMESTIC_API_HOST,
-  isOfficialHostname,
-} from '@/config/domain-profile'
+import { DOMESTIC_API_HOST, isOfficialHostname } from '@/config/domain-profile'
 import { useClash } from '@/hooks/use-clash'
 import { useConnectionData } from '@/hooks/use-connection-data'
 import { useProfiles } from '@/hooks/use-profiles'
