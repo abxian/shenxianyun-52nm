@@ -34,20 +34,48 @@ function actualArrow(source, name, ports) {
   return new Function('ports', `with(ports){${js}; return callback}`)(ports)
 }
 
-test('Mac Home retains the independent GitHub Release route without installing', async () => {
-  const home = await read('src/pages/home.tsx')
-  const urls = []
-  await actualArrow(home, 'doUpdate', {
-    updateInfo: { available: true, version: '2.5.39' },
-    updating: false,
-    isMacOS: true,
-    DOMAIN_PROFILE: { githubRepository: 'abxian/shenxianyun-52nm' },
-    openWebUrl: async (url) => urls.push(url),
-    setUpdating: () => assert.fail('Mac must not install in-place'),
-  })()
-  assert.deepEqual(urls, [
-    'https://github.com/abxian/shenxianyun-52nm/releases/latest',
+test('Mac Home uses the Wuai mirror before the matching GitHub Release', async () => {
+  const [home, service] = await Promise.all([
+    read('src/pages/home.tsx'),
+    read('src/services/update.ts'),
   ])
+  const base = 'https://mirror.example.net:5443'
+  for (const [arch, suffix, available] of [
+    ['aarch64', 'aarch64', true],
+    ['x86_64', 'x64', true],
+    ['aarch64', 'aarch64', false],
+  ]) {
+    const expected = `${base}/sxy/wuai/assets/v2.5.43/Wuaiyun_2.5.43_${suffix}.dmg`
+    const fallback =
+      'https://github.com/abxian/shenxianyun-52nm/releases/tag/v2.5.43'
+    const opened = []
+    const downloadUrl = actualArrow(service, 'macosDufsDownloadUrl', {
+      ensureSemver: (version) => version,
+      refreshEndpoints: async () => ({ download_base: base }),
+      fetchWithVerifiedTls: async (url, options) => {
+        assert.equal(url, expected)
+        assert.equal(options.method, 'HEAD')
+        return new Response(null, {
+          status: available ? 200 : 404,
+          headers: { 'Content-Length': available ? '100' : '0' },
+        })
+      },
+    })
+    await actualArrow(home, 'doUpdate', {
+      updateInfo: { available: true, version: '2.5.43' },
+      updating: false,
+      isMacOS: true,
+      getAppArch: async () => arch,
+      macosDufsDownloadUrl: downloadUrl,
+      releaseUrlForVersion: (version) => {
+        assert.equal(version, '2.5.43')
+        return fallback
+      },
+      openWebUrl: async (url) => opened.push(url),
+      setUpdating: () => assert.fail('Mac must not install in-place'),
+    })()
+    assert.deepEqual(opened, [available ? expected : fallback])
+  }
 })
 
 test('metadata endpoints remain on the independent GitHub mirror and origin', async () => {
