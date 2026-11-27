@@ -112,6 +112,7 @@ import {
   stopCore,
   deleteProfile,
   updateProfile,
+  getAppArch,
 } from '@/services/cmds'
 import delayManager from '@/services/delay'
 import {
@@ -199,6 +200,8 @@ import {
 import {
   downloadAndInstallWithFallback,
   cancelAppUpdateDownload,
+  macosDufsDownloadUrl,
+  releaseUrlForVersion,
 } from '@/services/update'
 import {
   needsSubscriptionRefresh,
@@ -962,9 +965,11 @@ const HomePage = () => {
     if (!updateInfo?.available || updating) return
     // Match Settings: download the NAS DMG for this CPU, then install manually.
     if (isMacOS) {
-      await openWebUrl(
-        `https://github.com/${DOMAIN_PROFILE.githubRepository}/releases/latest`,
-      ).catch(() => undefined)
+      const arch = await getAppArch().catch(() => null)
+      const downloadUrl =
+        (await macosDufsDownloadUrl(arch, updateInfo.version)) ??
+        releaseUrlForVersion(updateInfo.version)
+      await openWebUrl(downloadUrl).catch(() => undefined)
       return
     }
     if (busy || manualBusy || refreshApplyInFlightRef.current) {

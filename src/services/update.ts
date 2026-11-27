@@ -1,15 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import {
-  check,
-  type CheckOptions,
-  type Update,
-} from '@tauri-apps/plugin-updater'
+import { check, type CheckOptions, Update } from '@tauri-apps/plugin-updater'
 
 import { DOMAIN_PROFILE } from '@/config/domain-profile'
 import { version as appVersion } from '@root/package.json'
 
 import {
+  fetchWithVerifiedTls,
   getEndpoints,
   getManagementProxy,
   refreshEndpoints,
@@ -158,7 +155,7 @@ export const resolveRemoteVersion = (update: Update): string | null => {
 
 const localVersionNormalized = normalizeVersion(appVersion)
 
-export const checkUpdateSafe = async (
+const checkConfiguredUpdate = async (
   options?: CheckOptions,
 ): Promise<Update | null> => {
   let result: Update | null
@@ -194,6 +191,38 @@ export const checkUpdateSafe = async (
   return result
 }
 
+export const checkUpdateSafe = async (
+  options?: CheckOptions,
+): Promise<Update | null> => {
+  const configured = checkConfiguredUpdate(options)
+  const discovered = async () => {
+    const endpoints = getEndpoints() ?? (await refreshEndpoints())
+    if (!endpoints?.download_base) return null
+    const metadata = await invoke<
+      ConstructorParameters<typeof Update>[0] | null
+    >('check_discovered_app_update', { downloadBase: endpoints.download_base })
+    return metadata ? new Update(metadata) : null
+  }
+  const [fallback, mirror] = await Promise.allSettled([
+    configured,
+    options ? Promise.resolve(null) : discovered(),
+  ])
+  if (mirror.status === 'fulfilled' && mirror.value) {
+    if (fallback.status !== 'fulfilled' || !fallback.value) return mirror.value
+    const comparison = compareVersions(
+      resolveRemoteVersion(mirror.value),
+      resolveRemoteVersion(fallback.value),
+    )
+    const useMirror = comparison !== null && comparison >= 0
+    await (useMirror ? fallback.value : mirror.value)
+      .close()
+      .catch(() => undefined)
+    return useMirror ? mirror.value : fallback.value
+  }
+  if (fallback.status === 'fulfilled') return fallback.value
+  throw fallback.reason
+}
+
 export const releaseUrlForVersion = (version?: string | null) => {
   const normalized = ensureSemver(version)
   return normalized
@@ -201,8 +230,31 @@ export const releaseUrlForVersion = (version?: string | null) => {
     : `${SHENXIANYUN_RELEASES_URL}/latest`
 }
 
-//52nm preserves its GitHub Release update route; no cross-site Dufs download.
-export const macosDufsDownloadUrl = (_arch?: string | null): null => null
+export const macosDufsDownloadUrl = async (
+  arch: string | null,
+  version: string,
+) => {
+  const target = arch === 'x86_64' ? 'x64' : arch === 'aarch64' ? arch : null
+  const expected = ensureSemver(version)
+  if (!target || !expected) return null
+  const endpoints = (await refreshEndpoints()) ?? getEndpoints()
+  try {
+    const base = new URL(endpoints?.download_base ?? '')
+    if (base.protocol !== 'https:' || base.username || base.password)
+      return null
+    const path = `sxy/wuai/assets/v${expected}/Wuaiyun_${expected}_${target}.dmg`
+    const url = new URL(path, `${base.href.replace(/\/$/, '')}/`)
+    const result = await fetchWithVerifiedTls(url.href, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(2500),
+    })
+    return result.ok && Number(result.headers.get('Content-Length')) > 0
+      ? url.href
+      : null
+  } catch {
+    return null
+  }
+}
 
 export const cancelAppUpdateDownload = () =>
   invoke<'cancelled' | 'installing' | 'idle'>('cancel_app_update_download')

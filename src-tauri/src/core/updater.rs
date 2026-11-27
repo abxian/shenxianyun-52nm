@@ -129,7 +129,7 @@ fn normalize_update_version(version: &str) -> Option<&str> {
     valid.then_some(normalized)
 }
 
-fn discovered_update_endpoint(base: &str) -> Option<reqwest::Url> {
+pub(crate) fn discovered_update_endpoint(base: &str) -> Option<reqwest::Url> {
     let mut url = reqwest::Url::parse(base).ok()?;
     if url.scheme() != "https"
         || url.host_str().is_none()

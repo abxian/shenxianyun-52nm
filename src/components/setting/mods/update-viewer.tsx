@@ -166,7 +166,7 @@ export function UpdateViewer({ ref }: { ref?: Ref<DialogRef> }) {
     // 而不是猜一个架构给出装不上的包。
     if (getSystem() === 'macos') {
       const arch = await getAppArch().catch(() => null)
-      const dufsUrl = macosDufsDownloadUrl(arch)
+      const dufsUrl = await macosDufsDownloadUrl(arch, updateInfo.version)
       await openUrl(dufsUrl ?? releaseUrlForVersion(updateInfo.version))
       return
     }

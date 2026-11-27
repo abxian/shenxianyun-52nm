@@ -8,7 +8,8 @@ use smartstring::alias::String;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager as _};
+use tauri::{AppHandle, Manager as _, ResourceId, Webview};
+use tauri_plugin_updater::UpdaterExt as _;
 
 const FACTORY_RESET_FILES: &[&str] = &[
     dirs::CLASH_CONFIG,
@@ -169,6 +170,43 @@ pub async fn exit_app() {
 pub async fn restart_app() -> CmdResult<()> {
     feat::restart_app().await;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredUpdateMetadata {
+    rid: ResourceId,
+    current_version: std::string::String,
+    version: std::string::String,
+    body: Option<std::string::String>,
+    raw_json: serde_json::Value,
+}
+
+#[tauri::command]
+pub async fn check_discovered_app_update(
+    webview: Webview,
+    download_base: String,
+) -> CmdResult<Option<DiscoveredUpdateMetadata>> {
+    let Some(endpoint) = updater::discovered_update_endpoint(download_base.as_str()) else {
+        return Ok(None);
+    };
+    let update = webview
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .stringify_err()?
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .stringify_err()?
+        .check()
+        .await
+        .stringify_err()?;
+    Ok(update.map(|update| DiscoveredUpdateMetadata {
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
+        body: update.body.clone(),
+        raw_json: update.raw_json.clone(),
+        rid: webview.resources_table().add(update),
+    }))
 }
 
 /// 在应用内安装指定版本：Dufs 优先，下载或校验失败后自动切换 GitHub。
