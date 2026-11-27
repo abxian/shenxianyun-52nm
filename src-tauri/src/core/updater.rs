@@ -145,6 +145,14 @@ pub(crate) fn discovered_update_endpoint(base: &str) -> Option<reqwest::Url> {
     Some(url)
 }
 
+fn resolve_mirror_asset(endpoint: &reqwest::Url, asset: &reqwest::Url) -> Option<reqwest::Url> {
+    if endpoint.scheme() != "https" || asset.query().is_some() || asset.fragment().is_some() {
+        return None;
+    }
+    let (_, path) = asset.path().split_once("/sxy/wuai/assets/")?;
+    endpoint.join(&format!("assets/{path}")).ok()
+}
+
 async fn download_verified_update(
     app_handle: &AppHandle,
     source: UpdateSource,
@@ -153,9 +161,12 @@ async fn download_verified_update(
 ) -> Result<(Update, Vec<u8>)> {
     emit_update_progress(app_handle, source, "checking", None, None);
 
-    let updater = app_handle.updater_builder().endpoints(vec![endpoint])?.build()?;
+    let updater = app_handle
+        .updater_builder()
+        .endpoints(vec![endpoint.clone()])?
+        .build()?;
     check_download_cancelled()?;
-    let update = download_watchdog::watch(
+    let mut update = download_watchdog::watch(
         updater.check(),
         Arc::new(Mutex::new(Instant::now())),
         Duration::from_secs(20),
@@ -176,6 +187,12 @@ async fn download_verified_update(
             expected_version,
             remote_version
         ));
+    }
+
+    if matches!(source, UpdateSource::Dufs)
+        && let Some(asset) = resolve_mirror_asset(&endpoint, &update.download_url)
+    {
+        update.download_url = asset;
     }
 
     let last_progress = Arc::new(Mutex::new(Instant::now()));
@@ -900,6 +917,16 @@ mod tests {
         );
         assert!(discovered_update_endpoint("http://new.example.net").is_none());
         assert!(discovered_update_endpoint("https://user@new.example.net").is_none());
+    }
+
+    #[test]
+    fn mirror_assets_follow_the_discovered_host() {
+        let endpoint = discovered_update_endpoint("https://replacement.example.net/mirror").unwrap();
+        let asset = reqwest::Url::parse("https://old.example.net/sxy/wuai/assets/v2.5.60/installer.exe").unwrap();
+        assert_eq!(
+            resolve_mirror_asset(&endpoint, &asset).unwrap().as_str(),
+            "https://replacement.example.net/mirror/sxy/wuai/assets/v2.5.60/installer.exe"
+        );
     }
 
     #[test]
