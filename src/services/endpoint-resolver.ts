@@ -38,8 +38,12 @@ const allApiBases = (): string[] => {
 
 // 发现锚点：独立站动态接口优先，GitHub 与国外站点作为备用。
 const DISCOVERY_URLS = [...DOMAIN_PROFILE.discoveryUrls]
-const PRIMARY_DISCOVERY_URLS = DISCOVERY_URLS.filter((url) => url.endsWith('/wuaiyun-client.json'))
-const LEGACY_DISCOVERY_URLS = DISCOVERY_URLS.filter((url) => !PRIMARY_DISCOVERY_URLS.includes(url))
+const PRIMARY_DISCOVERY_URLS = DISCOVERY_URLS.filter((url) =>
+  url.endsWith('/wuaiyun-client.json'),
+)
+const LEGACY_DISCOVERY_URLS = DISCOVERY_URLS.filter(
+  (url) => !PRIMARY_DISCOVERY_URLS.includes(url),
+)
 
 // 每个复制项目按 profile.id 使用独立缓存，绝不读取其它站点线路。
 const STORAGE_KEY = `shenxianyun.${DOMAIN_PROFILE.id}.endpoints`
@@ -193,8 +197,9 @@ const fetchDiscovery = async (url: string): Promise<Endpoints> => {
 /** 并发拉取发现源，取第一个有效响应。发现失败不阻塞内置主线路。 */
 export const refreshEndpoints = async (): Promise<Endpoints | null> => {
   try {
-    const parsed = await Promise.any(PRIMARY_DISCOVERY_URLS.map(fetchDiscovery))
-      .catch(() => Promise.any(LEGACY_DISCOVERY_URLS.map(fetchDiscovery)))
+    const parsed = await Promise.any(
+      PRIMARY_DISCOVERY_URLS.map(fetchDiscovery),
+    ).catch(() => Promise.any(LEGACY_DISCOVERY_URLS.map(fetchDiscovery)))
     localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
     return parsed
   } catch {
